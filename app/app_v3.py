@@ -1035,8 +1035,8 @@ with tab_emp:
                     f"</div>"
                     f"<div class='lc-date'><span class='id-tag'>{fmt_id(e['id'])}</span>&nbsp;&nbsp;Devolução: {fmt(e['data_devolucao'])}</div>"
                     f"<div class='lc-rens'>Renovações usadas: <strong>{rens}/{MAX_REN}</strong>"
-                    f"{' &nbsp;·&nbsp; <span style=\"color:#d97706\">⏳ ' + str(len(fila)) + ' na fila</span>' if fila else ''}"
-                    f"</div>"
+                    + (' &nbsp;·&nbsp; <span style="color:#d97706">⏳ ' + str(len(fila)) + ' na fila</span>' if fila else '')
+                    + "</div>"
                     f"</div>",
                     unsafe_allow_html=True,
                 )
