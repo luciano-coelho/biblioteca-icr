@@ -290,6 +290,20 @@ button[role="tab"]:hover:not([aria-selected="true"]) {
 .hi .hd { font-size: .68rem; color: var(--muted); }
 .hi .ho { font-size: .88rem; color: #1f2937; line-height: 1.45; }
 
+/* ═══ ID tag ════════════════════════════════════ */
+.id-tag {
+  font-size: .67rem;
+  font-weight: 700;
+  color: var(--muted);
+  background: #f1f5f9;
+  border: 1px solid var(--border);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: monospace;
+  letter-spacing: .02em;
+  vertical-align: middle;
+}
+
 /* ═══ WhatsApp button ════════════════════════════ */
 .wa {
   display: flex;
@@ -652,6 +666,11 @@ def loan_status(dl: int):
     return "ok", f"{dl} dias"
 
 
+def fmt_id(id_val: int) -> str:
+    """Format an ID with minimum 2 digits, e.g. 01, 02, 33, 100."""
+    return f"#{str(id_val).zfill(2)}"
+
+
 # ── Queries ──────────────────────────────────────────────────────────
 
 def q_livros():
@@ -903,6 +922,7 @@ with tab_home:
                     f"{pill(lbl, kind)}"
                     f"</div>"
                     f"<div class='lc-date'>"
+                    f"<span class='id-tag'>{fmt_id(e['id'])}</span>&nbsp;&nbsp;"
                     f"Retirada: <strong>{fmt(e['data_emprestimo'])}</strong>&nbsp;&nbsp;·&nbsp;&nbsp;"
                     f"Devolução: <strong>{fmt(e['data_devolucao'])}</strong>"
                     f"</div>",
@@ -1013,7 +1033,7 @@ with tab_emp:
                     f"<div class='lc-who'>{e['leitor_nome']}</div></div>"
                     f"{pill(lbl, kind)}"
                     f"</div>"
-                    f"<div class='lc-date'>Devolução: {fmt(e['data_devolucao'])}</div>"
+                    f"<div class='lc-date'><span class='id-tag'>{fmt_id(e['id'])}</span>&nbsp;&nbsp;Devolução: {fmt(e['data_devolucao'])}</div>"
                     f"<div class='lc-rens'>Renovações usadas: <strong>{rens}/{MAX_REN}</strong>"
                     f"{' &nbsp;·&nbsp; <span style=\"color:#d97706\">⏳ ' + str(len(fila)) + ' na fila</span>' if fila else ''}"
                     f"</div>"
@@ -1104,7 +1124,7 @@ with tab_emp:
                     f"<div class='lc-who'>{e['leitor_nome']}</div></div>"
                     f"{pill(lbl, kind)}"
                     f"</div>"
-                    f"<div class='lc-date'>Prevista: {fmt(e['data_devolucao'])}{fila_txt}</div>"
+                    f"<div class='lc-date'><span class='id-tag'>{fmt_id(e['id'])}</span>&nbsp;&nbsp;Prevista: {fmt(e['data_devolucao'])}{fila_txt}</div>"
                     f"</div>",
                     unsafe_allow_html=True,
                 )
@@ -1146,7 +1166,10 @@ with tab_emp:
 
                 with st.container(border=True):
                     if editing:
-                        st.markdown(f"**Editando: {e['livro_titulo']}**")
+                        st.markdown(
+                            f"<span class='id-tag'>{fmt_id(e['id'])}</span> **Editando empréstimo de: {e['livro_titulo']}**",
+                            unsafe_allow_html=True,
+                        )
                         leitor_map = {l["nome"]: l for l in leitores}
                         nomes      = list(leitor_map.keys())
                         idx_l      = nomes.index(e["leitor_nome"]) if e["leitor_nome"] in nomes else 0
@@ -1212,6 +1235,7 @@ with tab_emp:
                             f"<div><div class='lc-book'>{e['livro_titulo']}</div>"
                             f"<div class='lc-who'>{e['leitor_nome']}</div>"
                             f"<div class='lc-rens' style='margin-top:6px'>"
+                            f"<span class='id-tag'>{fmt_id(e['id'])}</span>&nbsp;&nbsp;"
                             f"{fmt(e['data_emprestimo'])} → {fmt(e['data_devolucao'])} "
                             f"&nbsp;·&nbsp; {e['renovacoes']} renovação(ões)</div>"
                             f"</div>"
@@ -1237,10 +1261,18 @@ with tab_livros:
                 st.error("O título é obrigatório.")
             else:
                 with get_conn() as conn:
-                    conn.execute("INSERT INTO livros (titulo, autor, categoria) VALUES (?,?,?)",
-                                 (t.strip(), a.strip(), k.strip()))
-                st.toast(f"\"{t}\" cadastrado!")
-                st.rerun()
+                    dup = conn.execute(
+                        "SELECT id FROM livros WHERE titulo=? COLLATE NOCASE AND autor=? COLLATE NOCASE",
+                        (t.strip(), a.strip()),
+                    ).fetchone()
+                if dup:
+                    st.error(f"Já existe um livro com o título \"{ t.strip()}\" deste autor.")
+                else:
+                    with get_conn() as conn:
+                        conn.execute("INSERT INTO livros (titulo, autor, categoria) VALUES (?,?,?)",
+                                     (t.strip(), a.strip(), k.strip()))
+                    st.toast(f"\"{t}\" cadastrado!")
+                    st.rerun()
 
     busca    = st.text_input("Buscar livro", placeholder="Título, autor ou categoria…", key="busca_livro")
     livros   = q_livros()
@@ -1276,7 +1308,10 @@ with tab_livros:
 
         with st.container(border=True):
             if editing:
-                st.markdown(f"**Editando: {l['titulo']}**")
+                st.markdown(
+                    f"<span class='id-tag'>{fmt_id(l['id'])}</span> **Editando: {l['titulo']}**",
+                    unsafe_allow_html=True,
+                )
                 nt = st.text_input("Título *",  value=l["titulo"],          key=f"et_{l['id']}")
                 na = st.text_input("Autor",      value=l["autor"] or "",    key=f"ea_{l['id']}")
                 nk = st.text_input("Categoria",  value=l["categoria"] or "", key=f"ek_{l['id']}")
@@ -1285,11 +1320,19 @@ with tab_livros:
                         st.error("O título é obrigatório.")
                     else:
                         with get_conn() as conn:
-                            conn.execute("UPDATE livros SET titulo=?, autor=?, categoria=? WHERE id=?",
-                                         (nt.strip(), na.strip(), nk.strip(), l["id"]))
-                        st.session_state.edit_livro = None
-                        st.toast("Livro atualizado!")
-                        st.rerun()
+                            dup = conn.execute(
+                                "SELECT id FROM livros WHERE titulo=? COLLATE NOCASE AND autor=? COLLATE NOCASE AND id!=?",
+                                (nt.strip(), na.strip(), l["id"]),
+                            ).fetchone()
+                        if dup:
+                            st.error(f"Já existe outro livro com o título \"{nt.strip()}\" deste autor.")
+                        else:
+                            with get_conn() as conn:
+                                conn.execute("UPDATE livros SET titulo=?, autor=?, categoria=? WHERE id=?",
+                                             (nt.strip(), na.strip(), nk.strip(), l["id"]))
+                            st.session_state.edit_livro = None
+                            st.toast("Livro atualizado!")
+                            st.rerun()
                 if st.button("Cancelar", key=f"cl_l_{l['id']}", use_container_width=True):
                     st.session_state.edit_livro = None
                     st.rerun()
@@ -1307,7 +1350,7 @@ with tab_livros:
                 st.markdown(
                     f"<div class='lc-hdr'>"
                     f"<div style='flex:1'>"
-                    f"<div class='bc-title'>{l['titulo']}</div>"
+                    f"<div class='bc-title'><span class='id-tag'>{fmt_id(l['id'])}</span> {l['titulo']}</div>"
                     f"<div class='bc-author'>{l['autor'] or '—'}</div>"
                     f"{cat_html}"
                     f"{emp_line}"
@@ -1408,13 +1451,28 @@ with tab_leitores:
                 if len(digits) < 10:
                     st.error("Telefone inválido. Informe DDD + número (mínimo 10 dígitos).")
                 else:
+                    erros = []
                     with get_conn() as conn:
-                        conn.execute(
-                            "INSERT INTO leitores (nome, telefone, email, endereco) VALUES (?,?,?,?)",
-                            (n.strip(), digits, em.strip(), end.strip()),
-                        )
-                    st.toast(f"\"{n}\" cadastrado!")
-                    st.rerun()
+                        if conn.execute(
+                            "SELECT id FROM leitores WHERE telefone=?", (digits,)
+                        ).fetchone():
+                            erros.append(f"Telefone {digits} já está cadastrado para outro leitor.")
+                        if em.strip() and conn.execute(
+                            "SELECT id FROM leitores WHERE email=? COLLATE NOCASE AND email!=''",
+                            (em.strip(),)
+                        ).fetchone():
+                            erros.append(f"E-mail já está cadastrado para outro leitor.")
+                    if erros:
+                        for msg in erros:
+                            st.error(msg)
+                    else:
+                        with get_conn() as conn:
+                            conn.execute(
+                                "INSERT INTO leitores (nome, telefone, email, endereco) VALUES (?,?,?,?)",
+                                (n.strip(), digits, em.strip(), end.strip()),
+                            )
+                        st.toast(f"\"{n}\" cadastrado!")
+                        st.rerun()
 
     busca_l  = st.text_input("Buscar leitor", placeholder="Nome, telefone, e-mail…", key="busca_leitor")
     leitores = q_leitores()
@@ -1444,7 +1502,10 @@ with tab_leitores:
 
         with st.container(border=True):
             if editing:
-                st.markdown(f"**Editando: {l['nome']}**")
+                st.markdown(
+                    f"<span class='id-tag'>{fmt_id(l['id'])}</span> **Editando: {l['nome']}**",
+                    unsafe_allow_html=True,
+                )
                 en   = st.text_input("Nome completo *", value=l["nome"],           key=f"eln_{l['id']}")
                 ep   = st.text_input("WhatsApp *",       value=l["telefone"],       key=f"elp_{l['id']}")
                 eem  = st.text_input("E-mail",            value=l["email"] or "",    key=f"elem_{l['id']}")
@@ -1457,14 +1518,30 @@ with tab_leitores:
                         if len(digits) < 10:
                             st.error("Telefone inválido.")
                         else:
+                            erros = []
                             with get_conn() as conn:
-                                conn.execute(
-                                    "UPDATE leitores SET nome=?, telefone=?, email=?, endereco=? WHERE id=?",
-                                    (en.strip(), digits, eem.strip(), eend.strip(), l["id"]),
-                                )
-                            st.session_state.edit_leitor = None
-                            st.toast("Leitor atualizado!")
-                            st.rerun()
+                                if conn.execute(
+                                    "SELECT id FROM leitores WHERE telefone=? AND id!=?",
+                                    (digits, l["id"])
+                                ).fetchone():
+                                    erros.append(f"Telefone {digits} já está cadastrado para outro leitor.")
+                                if eem.strip() and conn.execute(
+                                    "SELECT id FROM leitores WHERE email=? COLLATE NOCASE AND id!=? AND email!=''",
+                                    (eem.strip(), l["id"])
+                                ).fetchone():
+                                    erros.append("E-mail já está cadastrado para outro leitor.")
+                            if erros:
+                                for msg in erros:
+                                    st.error(msg)
+                            else:
+                                with get_conn() as conn:
+                                    conn.execute(
+                                        "UPDATE leitores SET nome=?, telefone=?, email=?, endereco=? WHERE id=?",
+                                        (en.strip(), digits, eem.strip(), eend.strip(), l["id"]),
+                                    )
+                                st.session_state.edit_leitor = None
+                                st.toast("Leitor atualizado!")
+                                st.rerun()
                 if st.button("Cancelar", key=f"cl_r_{l['id']}", use_container_width=True):
                     st.session_state.edit_leitor = None
                     st.rerun()
@@ -1480,7 +1557,7 @@ with tab_leitores:
                 st.markdown(
                     f"<div class='lc-hdr' style='padding:4px 0'>"
                     f"<div style='flex:1;min-width:0'>"
-                    f"<div class='rc-name'>{l['nome']}</div>"
+                    f"<div class='rc-name'><span class='id-tag'>{fmt_id(l['id'])}</span> {l['nome']}</div>"
                     f"<div class='rc-phone'>{l['telefone']}</div>"
                     f"{extra}"
                     f"<div class='rc-extra' style='margin-top:6px'>{total} empréstimo(s) registrado(s)</div>"
@@ -1639,20 +1716,36 @@ with tab_cfg:
 
     usuarios_list = q_usuarios()
     for u in usuarios_list:
-        eh_eu    = u["usuario"] == st.session_state.usuario_atual
-        eh_admin = u["usuario"] == "admin"
-        editando = st.session_state.edit_usuario == u["id"]
+        eh_eu        = u["usuario"] == st.session_state.usuario_atual
+        eh_admin_row = u["usuario"] == "admin"
+        logado_admin = st.session_state.usuario_atual == "admin"
+        pode_editar  = eh_eu or logado_admin
+        pode_excluir = logado_admin and not eh_admin_row
+        editando     = st.session_state.edit_usuario == u["id"]
+
+        # Security guard: prevent session-state abuse
+        if editando and not pode_editar:
+            st.session_state.edit_usuario = None
+            st.rerun()
 
         with st.container(border=True):
             if editando:
                 # ─ Editar senha (inline) ─
-                st.markdown(f"**Alterar senha — {u['usuario']}**")
-                ms_atual = st.text_input("Senha atual", type="password", key=f"ms_a_{u['id']}")
+                st.markdown(
+                    f"<span class='id-tag'>{fmt_id(u['id'])}</span> **Alterar senha — {u['usuario']}**",
+                    unsafe_allow_html=True,
+                )
+                # Próprio usuário deve confirmar senha atual; admin alterando outra conta não precisa
+                ms_atual = ""
+                if eh_eu:
+                    ms_atual = st.text_input("Senha atual", type="password", key=f"ms_a_{u['id']}")
+                elif logado_admin:
+                    st.caption("Você está redefinindo a senha de outro usuário (admin).")
                 ms_nova  = st.text_input("Nova senha",  type="password", key=f"ms_n_{u['id']}")
                 ms_conf  = st.text_input("Confirmar",   type="password", key=f"ms_c_{u['id']}")
                 _ea, _eb = st.columns(2)
                 if _ea.button("Salvar", key=f"sv_u_{u['id']}", type="primary", use_container_width=True):
-                    if not verificar_login(u["usuario"], ms_atual):
+                    if eh_eu and not verificar_login(u["usuario"], ms_atual):
                         st.error("Senha atual incorreta.")
                     elif ms_nova != ms_conf:
                         st.error("As senhas não coincidem.")
@@ -1674,15 +1767,19 @@ with tab_cfg:
                 # ─ Linha do usuário ─
                 _la, _lb, _lc = st.columns([5, 1, 1])
                 _la.markdown(
-                    f"**{u['usuario']}** "
+                    f"<span class='id-tag'>{fmt_id(u['id'])}</span> **{u['usuario']}** "
                     + ("<span style='font-size:.7rem;background:#dbeafe;color:#1e40af;padding:2px 8px;border-radius:99px;font-weight:700'>você</span> " if eh_eu else "")
+                    + ("<span style='font-size:.7rem;background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:99px;font-weight:700'>admin</span> " if eh_admin_row else "")
                     + f"<span style='font-size:.75rem;color:#6b7280'>desde {fmt(u['criado_em'])}</span>",
                     unsafe_allow_html=True,
                 )
-                if _lb.button("✏️", key=f"ed_usr_{u['id']}", help="Alterar senha"):
-                    st.session_state.edit_usuario = u["id"]
-                    st.rerun()
-                if not eh_admin and not eh_eu:
+                if pode_editar:
+                    if _lb.button("✏️", key=f"ed_usr_{u['id']}", help="Alterar senha"):
+                        st.session_state.edit_usuario = u["id"]
+                        st.rerun()
+                else:
+                    _lb.markdown("&nbsp;", unsafe_allow_html=True)
+                if pode_excluir:
                     if _lc.button("❌", key=f"del_usr_{u['id']}", help="Remover usuário"):
                         with get_conn() as conn:
                             conn.execute("DELETE FROM usuarios WHERE id=?", (u["id"],))
