@@ -452,6 +452,7 @@ def init_db():
             titulo      TEXT NOT NULL,
             autor       TEXT DEFAULT '',
             categoria   TEXT DEFAULT '',
+            quantidade  INTEGER DEFAULT 1,
             criado_em   DATE DEFAULT CURRENT_DATE
         );
         CREATE TABLE IF NOT EXISTS leitores (
@@ -515,6 +516,11 @@ with get_conn() as _mc:
     for _tbl, _col, _sql in _MIGRATE:
         if _col not in _cols:
             _mc.execute(_sql)
+
+with get_conn() as _mc:
+    _livros_cols = {r[1] for r in _mc.execute("PRAGMA table_info(livros)")}
+    if "quantidade" not in _livros_cols:
+        _mc.execute("ALTER TABLE livros ADD COLUMN quantidade INTEGER DEFAULT 1")
 
 # ── Usuário admin padrão ─────────────────────────────────────────────
 def _hash_senha(senha: str, salt: bytes = None) -> str:
@@ -606,38 +612,38 @@ def gerar_whats(phone: str, nome: str, livro: str, tipo: str,
         phone = "55" + phone
     msgs = {
         "confirmacao": (
-            f"Olá, {nome}! ☺\n\n"
+            f"Olá, {nome}! \n\n"
             f"Você retirou o livro *{livro}* da {igreja}.\n\n"
             f"► Retirada: {fmt(data_emp)}\n"
             f"► Devolução até: *{fmt(data_dev)}*\n\n"
             f"Boa leitura! Se precisar renovar, é só chamar. ♡"
         ),
         "lembrete": (
-            f"Olá, {nome}!\n\n"
+            f"Olá, {nome}! \n\n"
             f"O prazo para devolver o livro *{livro}* da {igreja} já passou "
             f"(venceu em {fmt(data_dev)}).\n\n"
             f"⚠ Por favor, devolva assim que possível para que outros irmãos possam ler. Obrigado! ♡"
         ),
         "aviso": (
-            f"Olá, {nome}! ☺\n\n"
+            f"Olá, {nome}! \n\n"
             f"Passando para lembrar que o prazo de devolução do livro *{livro}* "
             f"da {igreja} é *{fmt(data_dev)}*.\n\n"
             f"Se precisar de mais tempo, podemos renovar! ♡"
         ),
         "renovacao": (
-            f"Olá, {nome}! ☺\n\n"
+            f"Olá, {nome}! \n\n"
             f"Seu empréstimo do livro *{livro}* da {igreja} foi renovado!\n\n"
             f"► Nova data de devolução: *{fmt(data_dev)}*\n\n"
             f"Boa leitura! ♡"
         ),
         "disponivel": (
-            f"Olá, {nome}! ☺\n\n"
+            f"Olá, {nome}! \n\n"
             f"Boas notícias! O livro *{livro}* da {igreja} foi devolvido "
             f"e você é o(a) próximo(a) da fila de espera.\n\n"
             f"Venha buscá-lo quando quiser! ♡"
         ),
         "devolucao": (
-            f"Olá, {nome}! ☺\n\n"
+            f"Olá, {nome}! \n\n"
             f"Recebemos a devolução do livro *{livro}* da {igreja}. Muito obrigado!\n\n"
             f"Quando quiser pegar outro livro, é só chamar. ♡"
         ),
@@ -959,8 +965,10 @@ with tab_emp:
         leitores = q_leitores()
         livros   = q_livros()
         ativos   = q_ativos()
-        ids_emp  = {e["livro_id"] for e in ativos}
-        disponiveis = [l for l in livros if l["id"] not in ids_emp]
+        _loans_count = {}
+        for _e in ativos:
+            _loans_count[_e["livro_id"]] = _loans_count.get(_e["livro_id"], 0) + 1
+        disponiveis = [l for l in livros if _loans_count.get(l["id"], 0) < (l["quantidade"] or 1)]
 
         if not leitores:
             st.warning("Cadastre um leitor na aba Leitores primeiro.")
@@ -1256,6 +1264,7 @@ with tab_livros:
         t = st.text_input("Título *", key="nb_titulo")
         a = st.text_input("Autor", key="nb_autor")
         k = st.text_input("Categoria", placeholder="Teologia, Devocional, Missões…", key="nb_cat")
+        q = st.number_input("Quantidade de exemplares", min_value=1, value=1, step=1, key="nb_qtd")
         if st.button("Salvar livro", type="primary", key="btn_salvar_livro", use_container_width=True):
             if not t.strip():
                 st.error("O título é obrigatório.")
@@ -1269,15 +1278,17 @@ with tab_livros:
                     st.error(f"Já existe um livro com o título \"{ t.strip()}\" deste autor.")
                 else:
                     with get_conn() as conn:
-                        conn.execute("INSERT INTO livros (titulo, autor, categoria) VALUES (?,?,?)",
-                                     (t.strip(), a.strip(), k.strip()))
+                        conn.execute("INSERT INTO livros (titulo, autor, categoria, quantidade) VALUES (?,?,?,?)",
+                                     (t.strip(), a.strip(), k.strip(), int(q)))
                     st.toast(f"\"{t}\" cadastrado!")
                     st.rerun()
 
     busca    = st.text_input("Buscar livro", placeholder="Título, autor ou categoria…", key="busca_livro")
     livros   = q_livros()
     ativos   = q_ativos()
-    emp_map  = {e["livro_id"]: e for e in ativos}
+    loans_map: dict = {}
+    for _e in ativos:
+        loans_map.setdefault(_e["livro_id"], []).append(_e)
     _tf      = q_fila()
     fila_map: dict = {}
     for _f in _tf:
@@ -1290,8 +1301,12 @@ with tab_livros:
                   or q_low in (l["autor"] or "").lower()
                   or q_low in (l["categoria"] or "").lower()]
 
-    emprestados = [l for l in livros if l["id"] in emp_map]
-    disponiveis = [l for l in livros if l["id"] not in emp_map]
+    def _disponiveis_livro(l):
+        qty = l["quantidade"] if l["quantidade"] else 1
+        return qty - len(loans_map.get(l["id"], []))
+
+    emprestados = [l for l in livros if _disponiveis_livro(l) <= 0]
+    disponiveis = [l for l in livros if _disponiveis_livro(l) > 0]
 
     st.markdown(
         f"<div style='display:flex;gap:8px;margin:14px 0 4px;'>"
@@ -1302,8 +1317,10 @@ with tab_livros:
     )
 
     def _livro_card(l):
-        e       = emp_map.get(l["id"])
+        loans   = loans_map.get(l["id"], [])
         fila    = fila_map.get(l["id"], [])
+        qty     = l["quantidade"] if l["quantidade"] else 1
+        disp    = qty - len(loans)
         editing = st.session_state.edit_livro == l["id"]
 
         with st.container(border=True):
@@ -1315,6 +1332,7 @@ with tab_livros:
                 nt = st.text_input("Título *",  value=l["titulo"],          key=f"et_{l['id']}")
                 na = st.text_input("Autor",      value=l["autor"] or "",    key=f"ea_{l['id']}")
                 nk = st.text_input("Categoria",  value=l["categoria"] or "", key=f"ek_{l['id']}")
+                nq = st.number_input("Quantidade de exemplares", min_value=1, value=int(qty), step=1, key=f"eq_{l['id']}")
                 if st.button("Salvar", key=f"sv_l_{l['id']}", type="primary", use_container_width=True):
                     if not nt.strip():
                         st.error("O título é obrigatório.")
@@ -1328,8 +1346,8 @@ with tab_livros:
                             st.error(f"Já existe outro livro com o título \"{nt.strip()}\" deste autor.")
                         else:
                             with get_conn() as conn:
-                                conn.execute("UPDATE livros SET titulo=?, autor=?, categoria=? WHERE id=?",
-                                             (nt.strip(), na.strip(), nk.strip(), l["id"]))
+                                conn.execute("UPDATE livros SET titulo=?, autor=?, categoria=?, quantidade=? WHERE id=?",
+                                             (nt.strip(), na.strip(), nk.strip(), int(nq), l["id"]))
                             st.session_state.edit_livro = None
                             st.toast("Livro atualizado!")
                             st.rerun()
@@ -1338,14 +1356,15 @@ with tab_livros:
                     st.rerun()
             else:
                 emp_line = ""
-                if e:
+                if loans:
                     fila_tag = (f"&nbsp;&nbsp;·&nbsp;&nbsp;<span style='color:#d97706'>⏳ {len(fila)} na fila</span>"
                                 if fila else "")
-                    emp_line = (f"<div class='bc-info'>Com <strong>{e['leitor_nome']}</strong> "
-                                f"até {fmt(e['data_devolucao'])}{fila_tag}</div>")
+                    nomes = ", ".join(f"<strong>{e['leitor_nome']}</strong>" for e in loans)
+                    emp_line = (f"<div class='bc-info'>Com {nomes}{fila_tag}</div>")
 
                 cat_html   = f"<div class='bc-cat'>{l['categoria']}</div>" if l["categoria"] else ""
-                avail_pill = pill('Emprestado', 'late') if e else pill('Disponível', 'ok')
+                qty_html   = f"<div class='bc-cat'>{disp} de {qty} disponível(is)</div>"
+                avail_pill = pill('Emprestado', 'late') if disp <= 0 else pill('Disponível', 'ok')
 
                 st.markdown(
                     f"<div class='lc-hdr'>"
@@ -1353,6 +1372,7 @@ with tab_livros:
                     f"<div class='bc-title'><span class='id-tag'>{fmt_id(l['id'])}</span> {l['titulo']}</div>"
                     f"<div class='bc-author'>{l['autor'] or '—'}</div>"
                     f"{cat_html}"
+                    f"{qty_html}"
                     f"{emp_line}"
                     f"</div>"
                     f"{avail_pill}"
@@ -1364,7 +1384,7 @@ with tab_livros:
                 if ca.button("Editar", key=f"ed_livro_{l['id']}", use_container_width=True):
                     st.session_state.edit_livro = l["id"]
                     st.rerun()
-                if not e:
+                if disp > 0 and not loans:
                     if cb.button("Excluir", key=f"del_livro_{l['id']}", use_container_width=True):
                         with get_conn() as conn:
                             em_uso = conn.execute(
