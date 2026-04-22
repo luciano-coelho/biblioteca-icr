@@ -844,13 +844,14 @@ with tab_home:
     livros   = q_livros()
     leitores = q_leitores()
     ids_emp  = {e["livro_id"] for e in ativos}
-    n_disp   = len(livros) - len(ativos)
+    total_exemplares = sum((l["quantidade"] or 1) for l in livros)
+    n_disp   = total_exemplares - len(ativos)
 
     # ── Metrics 2×2 ──────────────────────────────────────────────────
     st.markdown(
         f"""<div class="mg">
           <div class="mc">
-            <div class="v" style="color:#2563eb">{len(livros)}</div>
+            <div class="v" style="color:#2563eb">{total_exemplares}</div>
             <div class="l">Total livros</div>
           </div>
           <div class="mc">
@@ -1200,7 +1201,7 @@ with tab_emp:
                         if st.button("Salvar alterações", key=f"sv_emp_{e['id']}", type="primary",
                                      use_container_width=True):
                             if nd_dev <= nd_emp:
-                                st.error("A data de devolução deve ser posterior ao empréstimo.")
+                                st.toast("A data de devolução deve ser posterior ao empréstimo.", icon="❌")
                             else:
                                 nl = leitor_map[sel_l]
                                 nb = livro_map_e[sel_b]
@@ -1267,7 +1268,7 @@ with tab_livros:
         q = st.number_input("Quantidade de exemplares", min_value=1, value=1, step=1, key="nb_qtd")
         if st.button("Salvar livro", type="primary", key="btn_salvar_livro", use_container_width=True):
             if not t.strip():
-                st.error("O título é obrigatório.")
+                st.toast("O título é obrigatório.", icon="❌")
             else:
                 with get_conn() as conn:
                     dup = conn.execute(
@@ -1275,7 +1276,7 @@ with tab_livros:
                         (t.strip(), a.strip()),
                     ).fetchone()
                 if dup:
-                    st.error(f"Já existe um livro com o título \"{ t.strip()}\" deste autor.")
+                    st.toast(f"Já existe um livro com o título \"{t.strip()}\" deste autor.", icon="❌")
                 else:
                     with get_conn() as conn:
                         conn.execute("INSERT INTO livros (titulo, autor, categoria, quantidade) VALUES (?,?,?,?)",
@@ -1335,7 +1336,7 @@ with tab_livros:
                 nq = st.number_input("Quantidade de exemplares", min_value=1, value=int(qty), step=1, key=f"eq_{l['id']}")
                 if st.button("Salvar", key=f"sv_l_{l['id']}", type="primary", use_container_width=True):
                     if not nt.strip():
-                        st.error("O título é obrigatório.")
+                        st.toast("O título é obrigatório.", icon="❌")
                     else:
                         with get_conn() as conn:
                             dup = conn.execute(
@@ -1343,7 +1344,7 @@ with tab_livros:
                                 (nt.strip(), na.strip(), l["id"]),
                             ).fetchone()
                         if dup:
-                            st.error(f"Já existe outro livro com o título \"{nt.strip()}\" deste autor.")
+                            st.toast(f"Já existe outro livro com o título \"{nt.strip()}\" deste autor.", icon="❌")
                         else:
                             with get_conn() as conn:
                                 conn.execute("UPDATE livros SET titulo=?, autor=?, categoria=?, quantidade=? WHERE id=?",
@@ -1391,14 +1392,14 @@ with tab_livros:
                                 "SELECT COUNT(*) FROM emprestimos WHERE livro_id=?", (l["id"],)
                             ).fetchone()[0]
                         if em_uso:
-                            st.warning("Não é possível excluir: livro possui histórico de empréstimos.")
+                            st.toast("Não é possível excluir: livro possui histórico de empréstimos.", icon="⚠️")
                         else:
                             with get_conn() as conn:
                                 conn.execute("DELETE FROM livros WHERE id=?", (l["id"],))
                             st.rerun()
 
                 # Fila de espera (somente livros emprestados)
-                if e:
+                if loans:
                     exp_label = (f"⏳ Fila de espera — {len(fila)} pessoa(s)"
                                  if fila else "Adicionar à fila de espera")
                     with st.expander(exp_label):
@@ -1465,11 +1466,11 @@ with tab_leitores:
         end = st.text_input("Endereço", key="nl_end", placeholder="Rua, número, bairro — cidade/UF")
         if st.button("Salvar leitor", type="primary", key="btn_salvar_leitor", use_container_width=True):
             if not n.strip() or not p.strip():
-                st.error("Nome e telefone são obrigatórios.")
+                st.toast("Nome e telefone são obrigatórios.", icon="❌")
             else:
                 digits = "".join(filter(str.isdigit, p))
                 if len(digits) < 10:
-                    st.error("Telefone inválido. Informe DDD + número (mínimo 10 dígitos).")
+                    st.toast("Telefone inválido. Informe DDD + número (mínimo 10 dígitos).", icon="❌")
                 else:
                     erros = []
                     with get_conn() as conn:
@@ -1484,7 +1485,7 @@ with tab_leitores:
                             erros.append(f"E-mail já está cadastrado para outro leitor.")
                     if erros:
                         for msg in erros:
-                            st.error(msg)
+                            st.toast(msg, icon="❌")
                     else:
                         with get_conn() as conn:
                             conn.execute(
@@ -1532,11 +1533,11 @@ with tab_leitores:
                 eend = st.text_input("Endereço",          value=l["endereco"] or "", key=f"elend_{l['id']}")
                 if st.button("Salvar", key=f"sv_r_{l['id']}", type="primary", use_container_width=True):
                     if not en.strip() or not ep.strip():
-                        st.error("Nome e telefone são obrigatórios.")
+                        st.toast("Nome e telefone são obrigatórios.", icon="❌")
                     else:
                         digits = "".join(filter(str.isdigit, ep))
                         if len(digits) < 10:
-                            st.error("Telefone inválido.")
+                            st.toast("Telefone inválido.", icon="❌")
                         else:
                             erros = []
                             with get_conn() as conn:
@@ -1552,7 +1553,7 @@ with tab_leitores:
                                     erros.append("E-mail já está cadastrado para outro leitor.")
                             if erros:
                                 for msg in erros:
-                                    st.error(msg)
+                                    st.toast(msg, icon="❌")
                             else:
                                 with get_conn() as conn:
                                     conn.execute(
@@ -1598,7 +1599,7 @@ with tab_leitores:
                                 "SELECT COUNT(*) FROM historico WHERE leitor_nome=?", (l["nome"],)
                             ).fetchone()[0]
                         if em_uso:
-                            st.warning(f"{l['nome']} possui histórico e não pode ser excluído.")
+                            st.toast(f"{l['nome']} possui histórico e não pode ser excluído.", icon="⚠️")
                         else:
                             with get_conn() as conn:
                                 conn.execute("DELETE FROM leitores WHERE id=?", (l["id"],))
@@ -1716,11 +1717,11 @@ with tab_cfg:
         nu_conf  = st.text_input("Confirmar senha *", type="password", key="nu_conf")
         if st.button("Salvar usuário", key="sv_nu", type="primary", use_container_width=True):
             if not nu_login.strip() or not nu_senha:
-                st.error("Preencha usuário e senha.")
+                st.toast("Preencha usuário e senha.", icon="❌")
             elif nu_senha != nu_conf:
-                st.error("As senhas não coincidem.")
+                st.toast("As senhas não coincidem.", icon="❌")
             elif len(nu_senha) < 4:
-                st.error("Mínimo 4 caracteres na senha.")
+                st.toast("Mínimo 4 caracteres na senha.", icon="❌")
             else:
                 try:
                     with get_conn() as conn:
@@ -1729,10 +1730,10 @@ with tab_cfg:
                             (nu_login.strip(), hash_senha(nu_senha)),
                         )
                     st.session_state.edit_usuario = None
-                    st.toast(f"Usuário '{nu_login.strip()}' criado!")
+                    st.toast(f"Usuário '{nu_login.strip()}' criado!", icon="✅")
                     st.rerun()
                 except sqlite3.IntegrityError:
-                    st.error(f"Usuário '{nu_login.strip()}' já existe.")
+                    st.toast(f"Usuário '{nu_login.strip()}' já existe.", icon="❌")
 
     usuarios_list = q_usuarios()
     for u in usuarios_list:
@@ -1766,11 +1767,11 @@ with tab_cfg:
                 _ea, _eb = st.columns(2)
                 if _ea.button("Salvar", key=f"sv_u_{u['id']}", type="primary", use_container_width=True):
                     if eh_eu and not verificar_login(u["usuario"], ms_atual):
-                        st.error("Senha atual incorreta.")
+                        st.toast("Senha atual incorreta.", icon="❌")
                     elif ms_nova != ms_conf:
-                        st.error("As senhas não coincidem.")
+                        st.toast("As senhas não coincidem.", icon="❌")
                     elif len(ms_nova) < 4:
-                        st.error("Mínimo 4 caracteres.")
+                        st.toast("Mínimo 4 caracteres.", icon="❌")
                     else:
                         with get_conn() as conn:
                             conn.execute(
