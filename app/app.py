@@ -4,6 +4,7 @@ import csv
 import io
 import os
 import hashlib
+import secrets
 import urllib.parse
 import requests
 import time
@@ -107,10 +108,18 @@ def evo_send(phone: str, text: str) -> bool:
     except Exception:
         return False
 
+
+@st.cache_resource
+def _session_store() -> dict:
+    """Store server-side de tokens de sessão: {token: username}.
+    Persiste enquanto o processo Streamlit estiver rodando."""
+    return {}
+
+
 st.set_page_config(
     page_title="Biblioteca ICR",
     page_icon="📚",
-    layout="centered",
+    layout="wide",
     initial_sidebar_state="collapsed",
 )
 
@@ -140,8 +149,11 @@ st.markdown("""
 
 /* ═══ Page canvas ══════════════════════════════════ */
 [data-testid="stAppViewContainer"] { background: var(--bg) !important; }
-.main .block-container {
-  max-width: 860px !important;
+.main .block-container,
+section.main .block-container,
+[data-testid="stMainBlockContainer"] {
+  max-width: 960px !important;
+  width: 960px !important;
   padding: 0 14px 100px !important;
   margin: 0 auto !important;
 }
@@ -178,6 +190,37 @@ st.markdown("""
   margin-top: 3px;
 }
 
+/* ═══ Username + botão logout no header ═══ */
+.lib-user-block {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.lib-user-name {
+  font-size: .75rem;
+  color: rgba(255,255,255,.80);
+  line-height: 1;
+}
+.lib-logout-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px; height: 26px;
+  background: rgba(255,255,255,.15);
+  border-radius: 50%;
+  font-size: .85rem;
+  color: rgba(255,255,255,.85) !important;
+  text-decoration: none !important;
+  flex-shrink: 0;
+  transition: background .2s, transform .15s;
+}
+.lib-logout-link:hover {
+  background: rgba(239,68,68,.75) !important;
+  color: white !important;
+  transform: scale(1.12);
+}
+
 /* ═══ TABS — horizontal scroll (fix truncation) ═══ */
 [data-testid="stTabs"] > div:first-child {
   overflow-x: auto !important;
@@ -195,17 +238,19 @@ st.markdown("""
 [data-testid="stTabs"] > div:first-child::-webkit-scrollbar { display: none !important; }
 [data-testid="stTabs"] > div:first-child > div {
   flex-wrap: nowrap !important;
-  min-width: max-content !important;
+  width: 100% !important;
   border-bottom: none !important;
   gap: 0 !important;
 }
 button[role="tab"] {
+  flex: 1 !important;
   white-space: nowrap !important;
-  flex-shrink: 0 !important;
+  text-align: center !important;
+  justify-content: center !important;
   font-size: .76rem !important;
   font-weight: 600 !important;
   min-height: 44px !important;
-  padding: 10px 10px !important;
+  padding: 10px 8px !important;
   color: var(--muted) !important;
   background: transparent !important;
   border: none !important;
@@ -865,6 +910,29 @@ if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "usuario_atual" not in st.session_state:
     st.session_state.usuario_atual = ""
+if "session_sid" not in st.session_state:
+    st.session_state.session_sid = ""
+
+# Restaurar sessão persistida via token na URL
+if not st.session_state.logged_in:
+    _sid = st.query_params.get("sid", "")
+    if _sid:
+        _saved_user = _session_store().get(_sid, "")
+        if _saved_user:
+            st.session_state.logged_in     = True
+            st.session_state.usuario_atual = _saved_user
+            st.session_state.session_sid   = _sid
+
+# Logout via query param (acionado pelo link ⏻ no header)
+if st.query_params.get("logout"):
+    _sid_logout = st.session_state.get("session_sid", "")
+    if _sid_logout:
+        _session_store().pop(_sid_logout, None)
+    st.session_state.logged_in     = False
+    st.session_state.usuario_atual = ""
+    st.session_state.session_sid   = ""
+    st.query_params.clear()
+    st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════
 # 🔐 LOGIN SCREEN
@@ -916,8 +984,12 @@ if not st.session_state.logged_in:
 
     if _entrar:
         if verificar_login(_usuario.strip(), _senha):
+            _new_sid = secrets.token_urlsafe(32)
+            _session_store()[_new_sid] = _usuario.strip()
             st.session_state.logged_in     = True
             st.session_state.usuario_atual = _usuario.strip()
+            st.session_state.session_sid   = _new_sid
+            st.query_params["sid"] = _new_sid
             st.rerun()
         else:
             st.error("Usuário ou senha inválidos.")
@@ -935,22 +1007,18 @@ st.markdown(
         <div class="lib-header-name">Biblioteca ICR</div>
         <div class="lib-header-sub">{cfg['nome_igreja']}</div>
       </div>
-      <div style="font-size:.78rem;color:rgba(255,255,255,.72);text-align:right;line-height:1.4">
-        👤 {st.session_state.usuario_atual}
+      <div class="lib-user-block">
+        <span class="lib-user-name">👤 {st.session_state.usuario_atual}</span>
+        <a href="?logout=1" class="lib-logout-link" title="Encerrar sessão">⏻</a>
       </div>
     </div>""",
     unsafe_allow_html=True,
 )
 
-if st.button("Sair", key="btn_logout", help="Encerrar sessão"):
-    st.session_state.logged_in    = False
-    st.session_state.usuario_atual = ""
-    st.rerun()
-
 _eh_admin = st.session_state.usuario_atual == "admin"
 
 tab_home, tab_emp, tab_livros, tab_leitores, tab_hist, tab_cfg, tab_msgs = st.tabs([
-    "🏠", "📖 Empréstimo", "📚 Livros", "👥 Leitores", "🕐 Histórico", "⚙️ Config", "💬 Mensagens"
+    "🏠 Início", "📖 Empréstimo", "📚 Livros", "👥 Leitores", "🕐 Histórico", "⚙️ Config", "💬 Mensagens"
 ])
 
 
@@ -1978,6 +2046,19 @@ with tab_msgs:
 
                         if f"_hist_{_jid}" in st.session_state:
                             _hist = st.session_state[f"_hist_{_jid}"]
+                            _bubbles_html = (
+                                "<div style='"
+                                "background:#e5ddd5;"
+                                "border-radius:12px;"
+                                "padding:12px 10px;"
+                                "max-height:340px;"
+                                "overflow-y:auto;"
+                                "display:flex;"
+                                "flex-direction:column;"
+                                "gap:4px;"
+                                "margin:8px 0 12px;"
+                                "'>"
+                            )
                             for _hm in sorted(_hist, key=lambda x: x.get("messageTimestamp", 0)):
                                 _hm_obj  = _hm.get("message", {}) or {}
                                 _hm_txt  = (
@@ -1989,17 +2070,37 @@ with tab_msgs:
                                 _hm_ts   = _hm.get("messageTimestamp", 0)
                                 _hm_when = _dt.datetime.fromtimestamp(_hm_ts).strftime("%d/%m %H:%M") if _hm_ts else ""
                                 _from_me = _hm.get("key", {}).get("fromMe", False)
-                                _align   = "right" if _from_me else "left"
-                                _bg      = "#dcf8c6" if _from_me else "#f1f0f0"
-                                st.markdown(
-                                    f"<div style='text-align:{_align};margin:4px 0'>"
-                                    f"<span style='background:{_bg};padding:6px 10px;border-radius:10px;"
-                                    f"display:inline-block;max-width:80%;font-size:.88rem'>"
+                                if _from_me:
+                                    _bubble_style = (
+                                        "background:#d9fdd3;"
+                                        "color:#111;"
+                                        "border-radius:12px 2px 12px 12px;"
+                                        "align-self:flex-end;"
+                                        "box-shadow:0 1px 2px rgba(0,0,0,.15);"
+                                    )
+                                else:
+                                    _bubble_style = (
+                                        "background:#fff;"
+                                        "color:#111;"
+                                        "border-radius:2px 12px 12px 12px;"
+                                        "align-self:flex-start;"
+                                        "box-shadow:0 1px 2px rgba(0,0,0,.12);"
+                                    )
+                                _bubbles_html += (
+                                    f"<div style='"
+                                    f"{_bubble_style}"
+                                    f"max-width:78%;"
+                                    f"padding:7px 10px 4px;"
+                                    f"font-size:.88rem;"
+                                    f"line-height:1.4;"
+                                    f"word-break:break-word;"
+                                    f"'>"
                                     f"{_hm_txt}"
-                                    f"<br><span style='font-size:.68rem;color:#888'>{_hm_when}</span>"
-                                    f"</span></div>",
-                                    unsafe_allow_html=True,
+                                    f"<div style='font-size:.65rem;color:#667;text-align:right;margin-top:3px'>{_hm_when}</div>"
+                                    f"</div>"
                                 )
+                            _bubbles_html += "</div>"
+                            st.markdown(_bubbles_html, unsafe_allow_html=True)
 
                         # Resposta rápida
                         _reply_key = f"inbox_reply_{_jid}"
@@ -2457,3 +2558,37 @@ with tab_cfg:
                     _lc.markdown("&nbsp;", unsafe_allow_html=True)
 
     st.markdown("<div style='height:48px'></div>", unsafe_allow_html=True)
+
+# ══════════════════════════════════════════════════════════════════════
+# FOOTER
+# ══════════════════════════════════════════════════════════════════════
+import datetime as _dt
+st.markdown(
+    f"""
+    <style>
+    .lib-footer {{
+      margin: 40px 0 0;
+      padding: 14px 0 8px;
+      text-align: center;
+      border-top: 1px solid #e5e7eb;
+    }}
+    .lib-footer-text {{
+      font-size: .70rem;
+      color: #9ca3af;
+      letter-spacing: .02em;
+    }}
+    .lib-footer-text a {{
+      color: #9ca3af;
+      text-decoration: none;
+    }}
+    .lib-footer-text a:hover {{ color: #6b7280; }}
+    </style>
+    <div class="lib-footer">
+      <div class="lib-footer-text">
+        © {_dt.date.today().year} Biblioteca ICR &mdash;
+        <a href="https://instagram.com/icrflorianopolis" target="_blank">@icrflorianopolis</a>
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
