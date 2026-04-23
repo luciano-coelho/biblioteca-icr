@@ -1018,7 +1018,7 @@ st.markdown(
 _eh_admin = st.session_state.usuario_atual == "admin"
 
 tab_home, tab_emp, tab_livros, tab_leitores, tab_hist, tab_cfg, tab_msgs = st.tabs([
-    "🏠 Início", "📖 Empréstimo", "📚 Livros", "👥 Leitores", "🕐 Histórico", "⚙️ Config", "💬 Mensagens"
+    "🏠 Início", "📖 Empréstimo", "📚 Livros", "👥 Leitores", "🕐 Histórico", "💬 Mensagens", "⚙️ Config"
 ])
 
 
