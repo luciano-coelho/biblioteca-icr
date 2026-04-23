@@ -79,7 +79,7 @@ Acesse `http://localhost:8080` e conecte a instância `biblioteca` via QR Code o
 ### 5. Iniciar o app
 
 ```bash
-python -m streamlit run app/app_v3.py --server.port 8503
+python -m streamlit run app/app.py --server.port 8503
 ```
 
 Acesse em: **http://localhost:8503**
@@ -105,7 +105,7 @@ python -m app.scheduler --agora
 ```
 biblioteca-icr/
 ├── app/
-│   ├── app_v3.py        # Aplicação principal Streamlit
+│   ├── app.py           # Aplicação principal Streamlit
 │   └── scheduler.py     # Serviço de lembretes automáticos
 ├── tests/
 │   └── test_app.py      # Suite de testes (224 testes)
@@ -122,7 +122,7 @@ biblioteca-icr/
 
 ### Evolution API
 
-As configurações de conexão ficam no topo de `app/app_v3.py`:
+As configurações de conexão ficam no topo de `app/app.py`:
 
 ```python
 EVO_URL      = "http://localhost:8080"

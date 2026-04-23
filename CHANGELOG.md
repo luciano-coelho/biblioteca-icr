@@ -54,7 +54,7 @@ Stack: Python 3.13 · Streamlit · SQLite · Evolution API (WhatsApp) · pytest
 ### Limpeza do projeto
 
 Arquivos removidos:
-- `app/app.py` — versão anterior do app (76 KB), substituída por `app_v3.py`
+- `app/app_v3.py` — arquivo renomeado para `app/app.py`
 - `index.html` — protótipo HTML descartado (40 KB)
 - `Dockerfile.evolution` — abordagem de build abandonada (todas as tentativas falharam)
 - `app/__pycache__/`, `tests/__pycache__/`, `.pytest_cache/` — caches automáticos
