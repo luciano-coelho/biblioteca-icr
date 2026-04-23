@@ -310,16 +310,20 @@ button[role="tab"]:hover:not([aria-selected="true"]) {
   align-items: center;
   justify-content: center;
   gap: 8px;
+  width: 100%;
   background: #25D366;
   color: white !important;
   border-radius: 12px;
-  padding: 15px;
-  margin-top: 12px;
+  padding: 0 16px;
+  min-height: 46px;
+  height: auto;
+  margin-top: 0;
   font-weight: 700;
   font-size: .97rem;
   text-decoration: none !important;
   cursor: pointer;
   transition: background .15s, transform .1s;
+  box-sizing: border-box;
 }
 .wa:hover  { background: #22c55e; }
 .wa:active { background: #16a34a; transform: scale(.98); }
@@ -987,6 +991,17 @@ with tab_emp:
             livro      = livro_map[sel_livro]
             data_dev   = data_emp + timedelta(days=cfg["dias"])
 
+            emp_leitor_atual = [e for e in ativos if e["leitor_id"] == leitor["id"]]
+            if emp_leitor_atual:
+                titulos_emp = ", ".join(f"\"{e['livro_titulo']}\"" for e in emp_leitor_atual)
+                kind_alerta = "al-warn" if len(emp_leitor_atual) >= 3 else "al-ok"
+                st.markdown(
+                    f"<div class='al {kind_alerta}'><div class='ab'>"
+                    f"{leitor['nome']} já possui <strong>{len(emp_leitor_atual)}/3</strong> empréstimo(s) ativo(s): {titulos_emp}"
+                    f"</div></div>",
+                    unsafe_allow_html=True,
+                )
+
             st.markdown(
                 f"<div class='al al-ok'><div class='ab'>"
                 f"Devolução prevista: <strong>{fmt(data_dev)}</strong> ({cfg['dias']} dias)"
@@ -995,23 +1010,40 @@ with tab_emp:
             )
 
             if st.button("Registrar empréstimo", type="primary", use_container_width=True):
-                with get_conn() as conn:
-                    conn.execute(
-                        "INSERT INTO emprestimos (leitor_id, livro_id, data_emprestimo, data_devolucao) VALUES (?,?,?,?)",
-                        (leitor["id"], livro["id"], data_emp.isoformat(), data_dev.isoformat()),
+                MAX_EMP_PESSOA = 3
+                emp_leitor = [e for e in ativos if e["leitor_id"] == leitor["id"]]
+                livros_emp_leitor = {e["livro_id"] for e in emp_leitor}
+
+                if len(emp_leitor) >= MAX_EMP_PESSOA:
+                    st.toast(
+                        f"{leitor['nome']} já possui {MAX_EMP_PESSOA} empréstimos ativos. "
+                        f"Devolva um livro antes de registrar novo.",
+                        icon="❌",
                     )
-                    conn.execute(
-                        "INSERT INTO historico (tipo, leitor_nome, livro_titulo, data, obs) VALUES (?,?,?,?,?)",
-                        ("emprestimo", leitor["nome"], livro["titulo"], data_emp.isoformat(),
-                         f"{leitor['nome']} retirou \"{livro['titulo']}\""),
+                elif livro["id"] in livros_emp_leitor:
+                    st.toast(
+                        f"{leitor['nome']} já está com um exemplar de \"{livro['titulo']}\". "
+                        f"Não é permitido emprestar o mesmo livro duas vezes.",
+                        icon="❌",
                     )
-                st.toast("Empréstimo registrado!")
-                st.session_state.wa_novo = {
-                    "label": f"Enviar confirmação para {leitor['nome']}",
-                    "url": gerar_whats(leitor["telefone"], leitor["nome"], livro["titulo"],
-                                       "confirmacao", data_emp, data_dev, cfg["nome_igreja"]),
-                }
-                st.rerun()
+                else:
+                    with get_conn() as conn:
+                        conn.execute(
+                            "INSERT INTO emprestimos (leitor_id, livro_id, data_emprestimo, data_devolucao) VALUES (?,?,?,?)",
+                            (leitor["id"], livro["id"], data_emp.isoformat(), data_dev.isoformat()),
+                        )
+                        conn.execute(
+                            "INSERT INTO historico (tipo, leitor_nome, livro_titulo, data, obs) VALUES (?,?,?,?,?)",
+                            ("emprestimo", leitor["nome"], livro["titulo"], data_emp.isoformat(),
+                             f"{leitor['nome']} retirou \"{livro['titulo']}\""),
+                        )
+                    st.toast("Empréstimo registrado!", icon="✅")
+                    st.session_state.wa_novo = {
+                        "label": f"Enviar confirmação para {leitor['nome']}",
+                        "url": gerar_whats(leitor["telefone"], leitor["nome"], livro["titulo"],
+                                           "confirmacao", data_emp, data_dev, cfg["nome_igreja"]),
+                    }
+                    st.rerun()
 
     # ── RENOVAR ──────────────────────────────────────────────────────
     with sub_renovar:
@@ -1219,14 +1251,25 @@ with tab_emp:
                                 st.toast("Empréstimo atualizado!")
                                 st.rerun()
 
-                        if st.button("Cancelar edição", key=f"cl_emp_{e['id']}", use_container_width=True):
-                            st.session_state.edit_emp = None
-                            st.rerun()
+                        col_wa, col_cl = st.columns(2)
+                        with col_wa:
+                            url_reenvio = gerar_whats(
+                                e["telefone"], e["leitor_nome"], e["livro_titulo"],
+                                "confirmacao", e["data_emprestimo"], e["data_devolucao"],
+                                cfg["nome_igreja"],
+                            )
+                            wa_button(f"Reenviar confirmação para {e['leitor_nome']}", url_reenvio)
+                        with col_cl:
+                            if st.button("Cancelar edição", key=f"cl_emp_{e['id']}", use_container_width=True):
+                                st.session_state.edit_emp = None
+                                st.rerun()
 
                         st.divider()
-                        if st.button("Cancelar este empréstimo", key=f"del_emp_{e['id']}",
+                        st.caption("⚠️ Zona de perigo")
+                        if st.button(f"🗑️ Cancelar empréstimo de \"{e['livro_titulo']}\"",
+                                     key=f"del_emp_{e['id']}",
                                      use_container_width=True,
-                                     help="O livro volta a ficar disponível"):
+                                     help="O livro volta a ficar disponível imediatamente"):
                             with get_conn() as conn:
                                 conn.execute("UPDATE emprestimos SET status='cancelado' WHERE id=?", (e["id"],))
                                 conn.execute(
@@ -1236,7 +1279,7 @@ with tab_emp:
                                      f"Empréstimo de \"{e['livro_titulo']}\" por {e['leitor_nome']} cancelado."),
                                 )
                             st.session_state.edit_emp = None
-                            st.toast("Empréstimo cancelado.")
+                            st.toast(f"Empréstimo de \"{e['livro_titulo']}\" cancelado.", icon="🗑️")
                             st.rerun()
                     else:
                         st.markdown(
