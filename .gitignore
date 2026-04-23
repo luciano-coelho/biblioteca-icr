@@ -1,3 +1,16 @@
+# ambiente
 venv/
+.env
+
+# banco de dados
 *.db
+
+# caches Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# logs de runtime
+logs/
 

@@ -5,6 +5,10 @@ import io
 import os
 import hashlib
 import urllib.parse
+import requests
+import time
+import random
+import math
 from datetime import date, timedelta
 
 # ══════════════════════════════════════════════════════════════════════
@@ -14,6 +18,94 @@ from datetime import date, timedelta
 DB = os.path.normpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'biblioteca.db')
 )
+
+# ── Evolution API (WhatsApp) ──────────────────────────────────────────
+EVO_URL      = "http://localhost:8080"
+EVO_KEY      = "biblio-icr-key"
+EVO_INSTANCE = "biblioteca"
+EVO_HEADERS  = {"apikey": EVO_KEY, "Content-Type": "application/json"}
+
+
+def evo_status(force: bool = False) -> str:
+    """Retorna 'open' se conectado, 'close' se desconectado, ou 'erro' se a API está fora.
+    Usa cache de 10s no session_state para não sobrecarregar a API."""
+    if not force:
+        cached   = st.session_state.get("_evo_status")
+        cached_t = st.session_state.get("_evo_status_ts", 0)
+        if cached and (time.time() - cached_t) < 10:
+            return cached
+    try:
+        r = requests.get(
+            f"{EVO_URL}/instance/connectionState/{EVO_INSTANCE}",
+            headers=EVO_HEADERS, timeout=3,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            # v2.x retorna {"instance": {"state": "open"}} ou {"state": "open"}
+            status = (
+                data.get("state")
+                or (data.get("instance") or {}).get("state")
+                or "close"
+            )
+        else:
+            status = "close"
+    except Exception:
+        status = "erro"
+    st.session_state["_evo_status"]    = status
+    st.session_state["_evo_status_ts"] = time.time()
+    return status
+
+
+def evo_qrcode() -> dict | None:
+    """Retorna dict com 'base64' do QR code ou None."""
+    try:
+        r = requests.get(
+            f"{EVO_URL}/instance/connect/{EVO_INSTANCE}",
+            headers=EVO_HEADERS, timeout=10,
+        )
+        if r.status_code == 200:
+            return r.json()
+    except Exception:
+        pass
+    return None
+
+
+def evo_get_messages(limit: int = 100, only_received: bool = False) -> list:
+    """Busca mensagens recentes da instância WhatsApp.
+    O filtro where é ignorado pela API v2 — filtramos client-side."""
+    try:
+        r = requests.post(
+            f"{EVO_URL}/chat/findMessages/{EVO_INSTANCE}",
+            headers=EVO_HEADERS,
+            json={},
+            timeout=10,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            records = data.get("messages", {}).get("records", [])
+            if only_received:
+                records = [m for m in records if not m.get("key", {}).get("fromMe", True)]
+            return records[:limit]
+    except Exception:
+        pass
+    return []
+
+
+def evo_send(phone: str, text: str) -> bool:
+    """Envia mensagem de texto via Evolution API. Retorna True se enviado."""
+    digits = "".join(filter(str.isdigit, str(phone)))
+    if not digits.startswith("55"):
+        digits = "55" + digits
+    try:
+        r = requests.post(
+            f"{EVO_URL}/message/sendText/{EVO_INSTANCE}",
+            headers=EVO_HEADERS,
+            json={"number": digits, "text": text},
+            timeout=10,
+        )
+        return r.status_code in (200, 201)
+    except Exception:
+        return False
 
 st.set_page_config(
     page_title="Biblioteca ICR",
@@ -49,7 +141,7 @@ st.markdown("""
 /* ═══ Page canvas ══════════════════════════════════ */
 [data-testid="stAppViewContainer"] { background: var(--bg) !important; }
 .main .block-container {
-  max-width: 520px !important;
+  max-width: 860px !important;
   padding: 0 14px 100px !important;
   margin: 0 auto !important;
 }
@@ -110,10 +202,10 @@ st.markdown("""
 button[role="tab"] {
   white-space: nowrap !important;
   flex-shrink: 0 !important;
-  font-size: .84rem !important;
+  font-size: .76rem !important;
   font-weight: 600 !important;
-  min-height: 48px !important;
-  padding: 12px 16px !important;
+  min-height: 44px !important;
+  padding: 10px 10px !important;
   color: var(--muted) !important;
   background: transparent !important;
   border: none !important;
@@ -655,13 +747,33 @@ def gerar_whats(phone: str, nome: str, livro: str, tipo: str,
     return f"https://wa.me/{phone}?text={urllib.parse.quote(msgs.get(tipo, ''))}"
 
 
-def wa_button(label: str, url: str):
-    """Renders a green WhatsApp branded link button."""
-    st.markdown(
-        f'<a href="{url}" target="_blank" rel="noopener noreferrer" class="wa">'
-        f'💬 {label}</a>',
-        unsafe_allow_html=True,
-    )
+def wa_button(label: str, url: str, phone: str = "", msg_text: str = "", key: str = ""):
+    """
+    Se WhatsApp conectado via Evolution API → envia direto e mostra botão de confirmação.
+    Caso contrário → abre link wa.me como fallback.
+    """
+    status = evo_status()
+    _btn_key = key if key else f"wa_send_{hash(label+phone)}"
+    if status == "open" and phone and msg_text:
+        if st.button(f"💬 {label}", use_container_width=True, key=_btn_key):
+            ok = evo_send(phone, msg_text)
+            if ok:
+                st.toast("Mensagem enviada pelo WhatsApp!", icon="✅")
+                return True
+            else:
+                st.toast("Falha ao enviar. Tente pelo link abaixo.", icon="⚠️")
+                st.markdown(
+                    f'<a href="{url}" target="_blank" rel="noopener noreferrer" class="wa">'
+                    f'💬 Abrir no WhatsApp</a>',
+                    unsafe_allow_html=True,
+                )
+    else:
+        st.markdown(
+            f'<a href="{url}" target="_blank" rel="noopener noreferrer" class="wa">'
+            f'💬 {label}</a>',
+            unsafe_allow_html=True,
+        )
+    return False
 
 
 def pill(label: str, kind: str = "blue") -> str:
@@ -764,7 +876,7 @@ if not st.session_state.logged_in:
         /* ── Login page layout ── */
         [data-testid="stAppViewContainer"] { background: #e8edf4 !important; }
         .main .block-container {
-            max-width: 400px !important;
+            max-width: 200px !important;
             padding: 48px 0 0 !important;
         }
 
@@ -835,8 +947,10 @@ if st.button("Sair", key="btn_logout", help="Encerrar sessão"):
     st.session_state.usuario_atual = ""
     st.rerun()
 
-tab_home, tab_emp, tab_livros, tab_leitores, tab_hist, tab_cfg = st.tabs([
-    "🏠 Início", "📖 Empréstimo", "📚 Livros", "👥 Leitores", "🕐 Histórico", "⚙️ Config"
+_eh_admin = st.session_state.usuario_atual == "admin"
+
+tab_home, tab_emp, tab_livros, tab_leitores, tab_hist, tab_cfg, tab_msgs = st.tabs([
+    "🏠", "📖 Empréstimo", "📚 Livros", "👥 Leitores", "🕐 Histórico", "⚙️ Config", "💬 Mensagens"
 ])
 
 
@@ -899,9 +1013,14 @@ with tab_home:
                 f"</div>",
                 unsafe_allow_html=True,
             )
+            _msg_lemb = gerar_whats.__doc__ and ""
+            _txt_lemb = (
+                f"Olá, {e['leitor_nome']}! \n\nO prazo para devolver o livro *{e['livro_titulo']}* da {cfg['nome_igreja']} já passou "
+                f"(venceu em {fmt(e['data_devolucao'])}).\n\n⚠ Por favor, devolva assim que possível para que outros irmãos possam ler. Obrigado! ♡"
+            )
             url = gerar_whats(e["telefone"], e["leitor_nome"], e["livro_titulo"],
                               "lembrete", e["data_emprestimo"], e["data_devolucao"], cfg["nome_igreja"])
-            wa_button(f"Lembrete para {e['leitor_nome']}", url)
+            wa_button(f"Lembrete para {e['leitor_nome']}", url, e["telefone"], _txt_lemb, key=f"wa_lemb_{e['id']}")
 
     if avisos:
         st.markdown("<div class='sl'>Vencendo em breve</div>", unsafe_allow_html=True)
@@ -915,9 +1034,13 @@ with tab_home:
                 f"</div>",
                 unsafe_allow_html=True,
             )
+            _txt_aviso = (
+                f"Olá, {e['leitor_nome']}! \n\nPassando para lembrar que o prazo de devolução do livro *{e['livro_titulo']}* "
+                f"da {cfg['nome_igreja']} é *{fmt(e['data_devolucao'])}*.\n\nSe precisar de mais tempo, podemos renovar! ♡"
+            )
             url = gerar_whats(e["telefone"], e["leitor_nome"], e["livro_titulo"],
                               "aviso", e["data_emprestimo"], e["data_devolucao"], cfg["nome_igreja"])
-            wa_button(f"Avisar {e['leitor_nome']}", url)
+            wa_button(f"Avisar {e['leitor_nome']}", url, e["telefone"], _txt_aviso, key=f"wa_aviso_{e['id']}")
 
     # ── Empréstimos ativos ────────────────────────────────────────────
     if ativos:
@@ -941,7 +1064,11 @@ with tab_home:
                 )
                 url = gerar_whats(e["telefone"], e["leitor_nome"], e["livro_titulo"],
                                   "confirmacao", e["data_emprestimo"], e["data_devolucao"], cfg["nome_igreja"])
-                wa_button("Enviar confirmação", url)
+                _txt_conf = (
+                    f"Olá, {e['leitor_nome']}! \n\nVocê retirou o livro *{e['livro_titulo']}* da {cfg['nome_igreja']}.\n\n"
+                    f"► Retirada: {fmt(e['data_emprestimo'])}\n► Devolução até: *{fmt(e['data_devolucao'])}*\n\nBoa leitura! ♡"
+                )
+                wa_button("Enviar confirmação", url, e["telefone"], _txt_conf, key=f"wa_conf_{e['id']}")
     else:
         st.markdown(
             "<div class='al al-ok'><div class='ab'>Nenhum empréstimo ativo no momento.</div></div>",
@@ -960,9 +1087,18 @@ with tab_emp:
     # ── NOVO ─────────────────────────────────────────────────────────
     with sub_novo:
         if st.session_state.wa_novo:
-            wa_button(st.session_state.wa_novo["label"], st.session_state.wa_novo["url"])
+            _wn = st.session_state.wa_novo
+            if _wn.get("enviado"):
+                st.info("✅ Confirmação já enviada. Para reenviar, visite a edição do empréstimo.", icon="ℹ️")
+            else:
+                if wa_button(_wn["label"], _wn["url"], _wn.get("phone", ""), _wn.get("text", ""), key="wa_novo_banner"):
+                    st.session_state.wa_novo["enviado"] = True
+                    st.rerun()
             if st.button("Fechar aviso", key="fechar_wa_novo", use_container_width=True):
                 st.session_state.wa_novo = None
+                for _k in ("emp_sel_leitor", "emp_sel_livro"):
+                    if _k in st.session_state:
+                        del st.session_state[_k]
                 st.rerun()
             st.divider()
 
@@ -984,32 +1120,39 @@ with tab_emp:
             livro_map  = {f"{b['titulo']}" + (f" — {b['autor']}" if b["autor"] else ""): b
                           for b in disponiveis}
 
-            sel_leitor = st.selectbox("Leitor", list(leitor_map.keys()))
-            sel_livro  = st.selectbox("Livro disponível", list(livro_map.keys()))
-            data_emp   = st.date_input("Data do empréstimo", value=date.today())
-            leitor     = leitor_map[sel_leitor]
-            livro      = livro_map[sel_livro]
-            data_dev   = data_emp + timedelta(days=cfg["dias"])
+            _PLAC_LEITOR = "— Selecionar leitor —"
+            _PLAC_LIVRO  = "— Selecionar livro —"
 
-            emp_leitor_atual = [e for e in ativos if e["leitor_id"] == leitor["id"]]
-            if emp_leitor_atual:
-                titulos_emp = ", ".join(f"\"{e['livro_titulo']}\"" for e in emp_leitor_atual)
-                kind_alerta = "al-warn" if len(emp_leitor_atual) >= 3 else "al-ok"
+            sel_leitor = st.selectbox("Leitor", [_PLAC_LEITOR] + list(leitor_map.keys()), key="emp_sel_leitor")
+            sel_livro  = st.selectbox("Livro disponível", [_PLAC_LIVRO] + list(livro_map.keys()), key="emp_sel_livro")
+            data_emp   = st.date_input("Data do empréstimo", value=date.today(), format="DD/MM/YYYY")
+
+            _form_valido = sel_leitor != _PLAC_LEITOR and sel_livro != _PLAC_LIVRO
+
+            if _form_valido:
+                leitor   = leitor_map[sel_leitor]
+                livro    = livro_map[sel_livro]
+                data_dev = data_emp + timedelta(days=cfg["dias"])
+
+                emp_leitor_atual = [e for e in ativos if e["leitor_id"] == leitor["id"]]
+                if emp_leitor_atual:
+                    titulos_emp = ", ".join(f"\"{e['livro_titulo']}\"" for e in emp_leitor_atual)
+                    kind_alerta = "al-warn" if len(emp_leitor_atual) >= 3 else "al-ok"
+                    st.markdown(
+                        f"<div class='al {kind_alerta}'><div class='ab'>"
+                        f"{leitor['nome']} já possui <strong>{len(emp_leitor_atual)}/3</strong> empréstimo(s) ativo(s): {titulos_emp}"
+                        f"</div></div>",
+                        unsafe_allow_html=True,
+                    )
+
                 st.markdown(
-                    f"<div class='al {kind_alerta}'><div class='ab'>"
-                    f"{leitor['nome']} já possui <strong>{len(emp_leitor_atual)}/3</strong> empréstimo(s) ativo(s): {titulos_emp}"
+                    f"<div class='al al-ok'><div class='ab'>"
+                    f"Devolução prevista: <strong>{fmt(data_dev)}</strong> ({cfg['dias']} dias)"
                     f"</div></div>",
                     unsafe_allow_html=True,
                 )
 
-            st.markdown(
-                f"<div class='al al-ok'><div class='ab'>"
-                f"Devolução prevista: <strong>{fmt(data_dev)}</strong> ({cfg['dias']} dias)"
-                f"</div></div>",
-                unsafe_allow_html=True,
-            )
-
-            if st.button("Registrar empréstimo", type="primary", use_container_width=True):
+            if st.button("Registrar empréstimo", type="primary", use_container_width=True, disabled=not _form_valido):
                 MAX_EMP_PESSOA = 3
                 emp_leitor = [e for e in ativos if e["leitor_id"] == leitor["id"]]
                 livros_emp_leitor = {e["livro_id"] for e in emp_leitor}
@@ -1038,17 +1181,27 @@ with tab_emp:
                              f"{leitor['nome']} retirou \"{livro['titulo']}\""),
                         )
                     st.toast("Empréstimo registrado!", icon="✅")
+                    _msg_novo = (
+                        f"Olá, {leitor['nome']}! \n\nVocê retirou o livro *{livro['titulo']}* da {cfg['nome_igreja']}.\n\n"
+                        f"► Retirada: {fmt(data_emp)}\n► Devolução até: *{fmt(data_dev)}*\n\nBoa leitura! Se precisar renovar, é só chamar. ♡"
+                    )
                     st.session_state.wa_novo = {
                         "label": f"Enviar confirmação para {leitor['nome']}",
                         "url": gerar_whats(leitor["telefone"], leitor["nome"], livro["titulo"],
                                            "confirmacao", data_emp, data_dev, cfg["nome_igreja"]),
+                        "phone": leitor["telefone"],
+                        "text": _msg_novo,
                     }
+                    for _k in ("emp_sel_leitor", "emp_sel_livro"):
+                        if _k in st.session_state:
+                            del st.session_state[_k]
                     st.rerun()
 
     # ── RENOVAR ──────────────────────────────────────────────────────
     with sub_renovar:
         if st.session_state.wa_renovar:
-            wa_button(st.session_state.wa_renovar["label"], st.session_state.wa_renovar["url"])
+            _wr = st.session_state.wa_renovar
+            wa_button(_wr["label"], _wr["url"], _wr.get("phone", ""), _wr.get("text", ""), key="wa_renovar_banner")
             if st.button("Fechar aviso", key="fechar_wa_renovar", use_container_width=True):
                 st.session_state.wa_renovar = None
                 st.rerun()
@@ -1104,10 +1257,16 @@ with tab_emp:
                                  f"{e['leitor_nome']} renovou \"{e['livro_titulo']}\" até {fmt(nova)}"),
                             )
                         st.toast(f"Renovado até {fmt(nova)}!")
+                        _msg_ren = (
+                            f"Olá, {e['leitor_nome']}! \n\nSeu empréstimo do livro *{e['livro_titulo']}* da {cfg['nome_igreja']} foi renovado!\n\n"
+                            f"► Nova data de devolução: *{fmt(nova)}*\n\nBoa leitura! ♡"
+                        )
                         st.session_state.wa_renovar = {
                             "label": f"Avisar renovação para {e['leitor_nome']}",
                             "url": gerar_whats(e["telefone"], e["leitor_nome"], e["livro_titulo"],
                                                "renovacao", e["data_emprestimo"], nova, cfg["nome_igreja"]),
+                            "phone": e["telefone"],
+                            "text": _msg_ren,
                         }
                         st.rerun()
 
@@ -1120,7 +1279,11 @@ with tab_emp:
             st.success(f"**{info['titulo']}** foi devolvido!")
             _url_dev = gerar_whats(info["telefone"], info["leitor_nome"], info["titulo"],
                                    "devolucao", info["data_emp"], date.today(), _cfg_d["nome_igreja"])
-            wa_button(f"Confirmar devolução para {info['leitor_nome']}", _url_dev)
+            _txt_dev = (
+                f"Olá, {info['leitor_nome']}! \n\nRecebemos a devolução do livro *{info['titulo']}* da {_cfg_d['nome_igreja']}. Muito obrigado!\n\n"
+                f"Quando quiser pegar outro livro, é só chamar. ♡"
+            )
+            wa_button(f"Confirmar devolução para {info['leitor_nome']}", _url_dev, info["telefone"], _txt_dev, key="wa_dev_banner")
             if fila_pos:
                 prox = fila_pos[0]
                 st.markdown(
@@ -1133,7 +1296,11 @@ with tab_emp:
                 _cfg_n = get_cfg()
                 url_n  = gerar_whats(prox["telefone"], prox["nome"], info["titulo"],
                                      "disponivel", date.today(), date.today(), _cfg_n["nome_igreja"])
-                wa_button(f"Avisar {prox['nome']} (próximo da fila)", url_n)
+                _txt_fila = (
+                    f"Olá, {prox['nome']}! \n\nBoas notícias! O livro *{info['titulo']}* da {_cfg_n['nome_igreja']} foi devolvido "
+                    f"e você é o(a) próximo(a) da fila de espera.\n\nVenha buscá-lo quando quiser! ♡"
+                )
+                wa_button(f"Avisar {prox['nome']} (próximo da fila)", url_n, prox["telefone"], _txt_fila, key="wa_fila_banner")
                 if st.button("Confirmar aviso e remover da fila", use_container_width=True):
                     with get_conn() as conn:
                         conn.execute(
@@ -1225,9 +1392,11 @@ with tab_emp:
 
                         nd_emp = st.date_input("Data do empréstimo",
                                                value=date.fromisoformat(e["data_emprestimo"]),
+                                               format="DD/MM/YYYY",
                                                key=f"ee_de_{e['id']}")
                         nd_dev = st.date_input("Data de devolução",
                                                value=date.fromisoformat(e["data_devolucao"]),
+                                               format="DD/MM/YYYY",
                                                key=f"ee_dv_{e['id']}")
 
                         if st.button("Salvar alterações", key=f"sv_emp_{e['id']}", type="primary",
@@ -1258,7 +1427,11 @@ with tab_emp:
                                 "confirmacao", e["data_emprestimo"], e["data_devolucao"],
                                 cfg["nome_igreja"],
                             )
-                            wa_button(f"Reenviar confirmação para {e['leitor_nome']}", url_reenvio)
+                            _txt_reenv = (
+                                f"Olá, {e['leitor_nome']}! \n\nVocê está com o livro *{e['livro_titulo']}* da {cfg['nome_igreja']}.\n\n"
+                                f"► Retirada: {fmt(e['data_emprestimo'])}\n► Devolução até: *{fmt(e['data_devolucao'])}*\n\nBoa leitura! ♡"
+                            )
+                            wa_button(f"Reenviar confirmação para {e['leitor_nome']}", url_reenvio, e["telefone"], _txt_reenv, key=f"wa_reenv_{e['id']}")
                         with col_cl:
                             if st.button("Cancelar edição", key=f"cl_emp_{e['id']}", use_container_width=True):
                                 st.session_state.edit_emp = None
@@ -1701,82 +1874,514 @@ with tab_hist:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# 💬 MENSAGENS
+# ══════════════════════════════════════════════════════════════════════
+with tab_msgs:
+    cfg = get_cfg()
+    _wa_st = evo_status(force=True)
+
+    if _wa_st == "erro":
+        st.error("❌ Evolution API indisponível. Verifique se o servidor está rodando.")
+    elif _wa_st != "open":
+        st.warning(
+            "📵 WhatsApp não conectado. Vá em **⚙️ Config → WhatsApp** para escanear o QR code.\n\n"
+            "Enquanto desconectado, os botões de mensagem abrem o WhatsApp Web no navegador."
+        )
+    else:
+        st.success("✅ WhatsApp conectado — mensagens enviadas diretamente pelo sistema.")
+
+    _tab_inbox, _tab_massa, _tab_ind = st.tabs(["📥 Caixa de Entrada", "📢 Envio em Massa", "✉️ Envio Individual"])
+
+    # ══════════════════════════════════════════════════════════════════
+    # 📥 CAIXA DE ENTRADA
+    # ══════════════════════════════════════════════════════════════════
+    with _tab_inbox:
+        if _wa_st != "open":
+            st.info("Conecte o WhatsApp para ver as mensagens recebidas.")
+        else:
+            col_r1, col_r2 = st.columns([3, 1])
+            with col_r1:
+                _inbox_filter = st.text_input("🔍 Filtrar por nome ou número", key="inbox_filter", placeholder="Digite para filtrar...")
+            with col_r2:
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.button("🔄 Atualizar", use_container_width=True, key="inbox_refresh"):
+                    st.session_state.pop("_inbox_cache", None)
+                    st.session_state.pop("_inbox_cache_ts", None)
+
+            # Cache de 30s para não sobrecarregar a API
+            _inbox_now = time.time()
+            _inbox_cached_ts = st.session_state.get("_inbox_cache_ts", 0)
+            if "_inbox_cache" not in st.session_state or (_inbox_now - _inbox_cached_ts) > 30:
+                _msgs_raw = evo_get_messages(limit=100, only_received=True)
+                st.session_state["_inbox_cache"]    = _msgs_raw
+                st.session_state["_inbox_cache_ts"] = _inbox_now
+            else:
+                _msgs_raw = st.session_state["_inbox_cache"]
+
+            if not _msgs_raw:
+                st.info("Nenhuma mensagem recebida ainda.")
+            else:
+                # Agrupa por contato (remoteJid), pega última mensagem de cada um
+                from collections import OrderedDict as _OD
+                _by_contact = _OD()
+                for _m in sorted(_msgs_raw, key=lambda x: x.get("messageTimestamp", 0), reverse=True):
+                    _jid  = _m.get("key", {}).get("remoteJid", "")
+                    if _jid and _jid not in _by_contact:
+                        _by_contact[_jid] = _m
+
+                # Aplica filtro
+                _f = _inbox_filter.strip().lower()
+                _contatos = []
+                for _jid, _m in _by_contact.items():
+                    _push  = _m.get("pushName") or ""
+                    _phone = _jid.split("@")[0]
+                    if _f and _f not in _push.lower() and _f not in _phone:
+                        continue
+                    _contatos.append((_jid, _m, _push, _phone))
+
+                st.markdown(f"**{len(_contatos)} conversa(s)**")
+                st.divider()
+
+                for _jid, _last_msg, _push, _phone in _contatos:
+                    # Extrai texto da última mensagem
+                    _msg_obj = _last_msg.get("message", {}) or {}
+                    _txt = (
+                        _msg_obj.get("conversation")
+                        or (_msg_obj.get("extendedTextMessage") or {}).get("text")
+                        or (_msg_obj.get("imageMessage") or {}).get("caption")
+                        or "[mídia]"
+                    )
+                    import datetime as _dt
+                    _ts = _last_msg.get("messageTimestamp", 0)
+                    _when = _dt.datetime.fromtimestamp(_ts).strftime("%d/%m %H:%M") if _ts else "—"
+                    _display_name = _push or _phone
+
+                    with st.expander(f"💬 **{_display_name}** · {_phone} · {_when}"):
+                        st.markdown(f"_Última mensagem:_ {_txt}")
+
+                        # Busca histórico desta conversa
+                        if st.button("Ver histórico", key=f"inbox_hist_{_jid}"):
+                            try:
+                                _hist_r = requests.post(
+                                    f"{EVO_URL}/chat/findMessages/{EVO_INSTANCE}",
+                                    headers=EVO_HEADERS,
+                                    json={},
+                                    timeout=10,
+                                )
+                                if _hist_r.status_code == 200:
+                                    _all = _hist_r.json().get("messages", {}).get("records", [])
+                                    # filtra client-side pelo remoteJid
+                                    _hist = [m for m in _all if m.get("key", {}).get("remoteJid") == _jid]
+                                    st.session_state[f"_hist_{_jid}"] = _hist
+                            except Exception:
+                                st.toast("Erro ao buscar histórico.", icon="❌")
+
+                        if f"_hist_{_jid}" in st.session_state:
+                            _hist = st.session_state[f"_hist_{_jid}"]
+                            for _hm in sorted(_hist, key=lambda x: x.get("messageTimestamp", 0)):
+                                _hm_obj  = _hm.get("message", {}) or {}
+                                _hm_txt  = (
+                                    _hm_obj.get("conversation")
+                                    or (_hm_obj.get("extendedTextMessage") or {}).get("text")
+                                    or (_hm_obj.get("imageMessage") or {}).get("caption")
+                                    or "[mídia]"
+                                )
+                                _hm_ts   = _hm.get("messageTimestamp", 0)
+                                _hm_when = _dt.datetime.fromtimestamp(_hm_ts).strftime("%d/%m %H:%M") if _hm_ts else ""
+                                _from_me = _hm.get("key", {}).get("fromMe", False)
+                                _align   = "right" if _from_me else "left"
+                                _bg      = "#dcf8c6" if _from_me else "#f1f0f0"
+                                st.markdown(
+                                    f"<div style='text-align:{_align};margin:4px 0'>"
+                                    f"<span style='background:{_bg};padding:6px 10px;border-radius:10px;"
+                                    f"display:inline-block;max-width:80%;font-size:.88rem'>"
+                                    f"{_hm_txt}"
+                                    f"<br><span style='font-size:.68rem;color:#888'>{_hm_when}</span>"
+                                    f"</span></div>",
+                                    unsafe_allow_html=True,
+                                )
+
+                        # Resposta rápida
+                        _reply_key = f"inbox_reply_{_jid}"
+                        # Limpa o campo ANTES de criar o widget (evita StreamlitAPIException)
+                        if st.session_state.pop(f"_inbox_limpar_{_jid}", False):
+                            st.session_state.pop(_reply_key, None)
+                        _reply_txt = st.text_area("Responder", key=_reply_key, height=80, placeholder="Digite sua resposta...")
+                        if st.button("Enviar resposta", key=f"inbox_send_{_jid}", use_container_width=True):
+                            if _reply_txt.strip():
+                                if evo_send(_phone, _reply_txt.strip()):
+                                    st.toast("Resposta enviada!", icon="✅")
+                                    st.session_state[f"_inbox_limpar_{_jid}"] = True
+                                    st.rerun()
+                                else:
+                                    st.toast("Falha ao enviar.", icon="❌")
+
+    # ══════════════════════════════════════════════════════════════════
+    # 📢 ENVIO EM MASSA
+    # ══════════════════════════════════════════════════════════════════
+    with _tab_massa:
+        with get_conn() as _conn:
+            _emp_ativos = _conn.execute("""
+                SELECT e.id, lt.nome, lt.telefone, lv.titulo,
+                       e.data_emprestimo, e.data_devolucao,
+                       (julianday('now') - julianday(e.data_devolucao)) AS atraso
+                FROM   emprestimos e
+                JOIN   leitores lt ON e.leitor_id = lt.id
+                JOIN   livros   lv ON e.livro_id  = lv.id
+                WHERE  e.status = 'ativo'
+                ORDER  BY e.data_devolucao
+            """).fetchall()
+
+        _filtro = st.selectbox(
+            "Filtrar por situação",
+            ["Todos ativos", "Atrasados", "Vencendo em 5 dias", "Em dia"],
+            key="msgs_filtro",
+        )
+
+        def _filtrar(rows):
+            result = []
+            for r in rows:
+                dl = dias_restantes(r["data_devolucao"])
+                if _filtro == "Atrasados"          and dl >= 0: continue
+                if _filtro == "Vencendo em 5 dias" and not (0 <= dl <= 5): continue
+                if _filtro == "Em dia"             and dl <= 5: continue
+                result.append(r)
+            return result
+
+        _emp_filtrados = _filtrar(_emp_ativos)
+
+        if not _emp_filtrados:
+            st.info("Nenhum empréstimo encontrado para o filtro selecionado.")
+        else:
+            _tipo_msg = st.selectbox(
+                "Tipo de mensagem",
+                ["lembrete", "aviso", "confirmacao"],
+                format_func=lambda x: {"lembrete": "⚠️ Lembrete (atrasado)", "aviso": "🔔 Aviso (vencendo)", "confirmacao": "✅ Confirmação"}[x],
+                key="msgs_tipo",
+            )
+
+            st.markdown(f"**{len(_emp_filtrados)} leitor(es) encontrado(s)**")
+
+            def _on_sel_todos():
+                val = st.session_state["msgs_sel_todos"]
+                for _e in _emp_filtrados:
+                    st.session_state[f"msgs_chk_{_e['id']}"] = val
+
+            _sel_todos = st.checkbox("Selecionar todos", key="msgs_sel_todos", on_change=_on_sel_todos)
+            _selecionados = []
+            for _e in _emp_filtrados:
+                dl = dias_restantes(_e["data_devolucao"])
+                _kind, _lbl = loan_status(dl)
+                _checked = st.checkbox(
+                    f"{_e['nome']} — {_e['titulo']} — {_lbl}",
+                    key=f"msgs_chk_{_e['id']}",
+                )
+                if _checked:
+                    _selecionados.append(_e)
+
+            if _selecionados:
+                st.markdown(f"**{len(_selecionados)} selecionado(s)**")
+                _BATCH_SIZE    = 5
+                _INTER_MSG_MAX = 1200   # 20 min entre mensagens do mesmo lote
+                _INTER_BATCH   = 3600   # 1 hora entre lotes
+                _total_lotes   = math.ceil(len(_selecionados) / _BATCH_SIZE)
+                if _total_lotes > 1:
+                    st.info(
+                        f"📋 **{len(_selecionados)} destinatários** serão enviados em "
+                        f"**{_total_lotes} lotes de até {_BATCH_SIZE}**, "
+                        f"com pausa de **1 hora** entre lotes."
+                    )
+                if st.button(
+                    f"💬 Enviar {_tipo_msg} para {len(_selecionados)} leitor(es)",
+                    type="primary",
+                    use_container_width=True,
+                    key="msgs_enviar_massa",
+                ):
+                    if _wa_st == "open":
+                        # Monta fila em lotes de 5 · pausa 1h entre lotes · 60–1200s entre msgs
+                        _fila = []
+                        for i, _e in enumerate(_selecionados):
+                            _lote_num    = i // _BATCH_SIZE          # 0-indexed
+                            _pos_in_lote = i %  _BATCH_SIZE
+                            _url = gerar_whats(
+                                _e["telefone"], _e["nome"], _e["titulo"],
+                                _tipo_msg, _e["data_emprestimo"], _e["data_devolucao"],
+                                cfg["nome_igreja"],
+                            )
+                            _txt = urllib.parse.unquote(_url.split("text=", 1)[1]) if "text=" in _url else ""
+                            if i == 0:
+                                _delay = 0                                 # primeiro envio imediato
+                            elif _pos_in_lote == 0:
+                                _delay = _INTER_BATCH                     # início de novo lote → 1h
+                            else:
+                                _delay = random.randint(60, _INTER_MSG_MAX)  # dentro do lote
+                            _fila.append({
+                                "e": _e, "txt": _txt, "delay": _delay,
+                                "lote": _lote_num + 1, "total_lotes": _total_lotes,
+                            })
+                        st.session_state["_batch_queue"]   = _fila
+                        st.session_state["_batch_results"] = {"sent": 0, "failed": [], "total": len(_fila)}
+                        st.session_state["_batch_next_at"] = time.time()
+                        st.rerun()
+                    else:
+                        st.warning("WhatsApp não conectado. Use os links abaixo para enviar manualmente:")
+                        for _e in _selecionados:
+                            _url = gerar_whats(
+                                _e["telefone"], _e["nome"], _e["titulo"],
+                                _tipo_msg, _e["data_emprestimo"], _e["data_devolucao"],
+                                cfg["nome_igreja"],
+                            )
+                            st.markdown(
+                                f'<a href="{_url}" target="_blank" rel="noopener noreferrer" class="wa">'
+                                f'💬 Enviar para {_e["nome"]}</a>',
+                                unsafe_allow_html=True,
+                            )
+
+        # ── Fila de envio em andamento ────────────────────────────────
+        if "_batch_queue" in st.session_state:
+            _q   = st.session_state["_batch_queue"]
+            _res = st.session_state["_batch_results"]
+            _now = time.time()
+            _nxt = st.session_state.get("_batch_next_at", 0)
+
+            if _q and _now >= _nxt:
+                _item = _q.pop(0)
+                if evo_send(_item["e"]["telefone"], _item["txt"]):
+                    _res["sent"] += 1
+                else:
+                    _res["failed"].append(_item["e"]["nome"])
+                if _q:
+                    st.session_state["_batch_next_at"] = time.time() + _q[0]["delay"]
+                else:
+                    del st.session_state["_batch_queue"]
+                    del st.session_state["_batch_next_at"]
+                st.rerun()
+            elif _q:
+                _remaining = max(0, _nxt - _now)
+                _mins = int(_remaining // 60)
+                _secs = int(_remaining % 60)
+                _prog = _res["sent"] / _res["total"]
+                _next_item       = _q[0]
+                _is_inter_batch  = _next_item.get("delay", 0) >= 3600
+                _lote_atual      = _next_item.get("lote", 1)
+                _total_lts       = _next_item.get("total_lotes", 1)
+                st.progress(_prog)
+                if _is_inter_batch:
+                    st.info(
+                        f"⏳ Lote {_lote_atual - 1}/{_total_lts} concluído — "
+                        f"{_res['sent']}/{_res['total']} enviados no total. "
+                        f"Próximo lote começa em **{_mins}m {_secs:02d}s**"
+                    )
+                else:
+                    st.info(
+                        f"📤 Lote {_lote_atual}/{_total_lts} — "
+                        f"{_res['sent']}/{_res['total']} enviados no total. "
+                        f"Próxima mensagem em **{_mins}m {_secs:02d}s**"
+                    )
+                if st.button("⛔ Cancelar envio", key="msgs_cancelar_batch"):
+                    del st.session_state["_batch_queue"]
+                    del st.session_state["_batch_next_at"]
+                    st.rerun()
+                time.sleep(min(5, max(1, _remaining)))
+                st.rerun()
+            else:
+                st.success(f"✅ Envio concluído! {_res['sent']} de {_res['total']} enviados.")
+                if _res["failed"]:
+                    st.warning(f"⚠️ Falhas: {', '.join(_res['failed'])}")
+                del st.session_state["_batch_results"]
+
+    # ══════════════════════════════════════════════════════════════════
+    # ✉️ ENVIO INDIVIDUAL
+    # ══════════════════════════════════════════════════════════════════
+    with _tab_ind:
+        with get_conn() as _conn:
+            _leitores_todos = _conn.execute(
+                "SELECT id, nome, telefone FROM leitores ORDER BY nome"
+            ).fetchall()
+
+        if _leitores_todos:
+            _nomes_map = {l["nome"]: l for l in _leitores_todos}
+            _sel_leitor = st.selectbox("Leitor", list(_nomes_map.keys()), key="msgs_ind_leitor")
+            _leitor_sel = _nomes_map[_sel_leitor]
+
+            if st.session_state.pop("_msgs_ind_limpar", False):
+                st.session_state["msgs_ind_texto"] = ""
+            _msg_livre = st.text_area(
+                "Mensagem",
+                placeholder="Digite a mensagem que será enviada ao leitor...",
+                key="msgs_ind_texto",
+                height=120,
+            )
+
+            if _wa_st == "open":
+                if st.button("💬 Enviar mensagem", type="primary", use_container_width=True, key="msgs_ind_enviar"):
+                    if _msg_livre.strip():
+                        if evo_send(_leitor_sel["telefone"], _msg_livre.strip()):
+                            st.toast(f"Mensagem enviada para {_sel_leitor}!", icon="✅")
+                            st.session_state["_msgs_ind_limpar"] = True
+                            st.rerun()
+                        else:
+                            st.toast("Falha ao enviar. Verifique a conexão.", icon="❌")
+                    else:
+                        st.toast("Digite uma mensagem antes de enviar.", icon="⚠️")
+            else:
+                _phone_fmt = "".join(filter(str.isdigit, str(_leitor_sel["telefone"])))
+                if not _phone_fmt.startswith("55"):
+                    _phone_fmt = "55" + _phone_fmt
+                _url_ind = f"https://wa.me/{_phone_fmt}?text={urllib.parse.quote(_msg_livre.strip())}" if _msg_livre.strip() else f"https://wa.me/{_phone_fmt}"
+                st.markdown(
+                    f'<a href="{_url_ind}" target="_blank" rel="noopener noreferrer" class="wa">'
+                    f'💬 Abrir conversa com {_sel_leitor} no WhatsApp Web</a>',
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.info("Nenhum leitor cadastrado.")
+
+
+# ══════════════════════════════════════════════════════════════════════
 # ⚙️ CONFIG
 # ══════════════════════════════════════════════════════════════════════
 with tab_cfg:
     cfg = get_cfg()
-    st.markdown("<div class='sl'>Configurações gerais</div>", unsafe_allow_html=True)
 
-    novo_nome  = st.text_input("Nome da Igreja", value=cfg["nome_igreja"])
-    novos_dias = st.number_input(
-        "Período de empréstimo (dias)", min_value=1, max_value=365, value=cfg["dias"]
-    )
-    if st.button("Salvar configurações", type="primary", use_container_width=True):
-        set_cfg(novo_nome.strip() or "Igreja Cristã Reformada", int(novos_dias))
-        st.toast("Configurações salvas!")
-        st.rerun()
+    if not _eh_admin:
+        st.info("🔒 Você pode apenas alterar sua própria senha nesta seção. Para outros ajustes, contate o administrador do sistema.")
+    else:
+        st.markdown("<div class='sl'>Configurações gerais</div>", unsafe_allow_html=True)
 
-    st.divider()
-    st.markdown("<div class='sl'>Exportar dados</div>", unsafe_allow_html=True)
+        novo_nome  = st.text_input("Nome da Igreja", value=cfg["nome_igreja"])
+        novos_dias = st.number_input(
+            "Período de empréstimo (dias)", min_value=1, max_value=365, value=cfg["dias"]
+        )
+        if st.button("Salvar configurações", type="primary", use_container_width=True):
+            set_cfg(novo_nome.strip() or "Igreja Cristã Reformada", int(novos_dias))
+            st.toast("Configurações salvas!")
+            st.rerun()
 
-    with get_conn() as conn:
-        livros_rows = conn.execute(
-            "SELECT titulo, autor, categoria, criado_em FROM livros ORDER BY titulo"
-        ).fetchall()
-        emp_rows = conn.execute("""
-            SELECT lt.nome, lt.telefone, lv.titulo,
-                   e.data_emprestimo, e.data_devolucao, e.status, e.renovacoes
-            FROM   emprestimos e
-            JOIN   leitores lt ON e.leitor_id = lt.id
-            JOIN   livros   lv ON e.livro_id  = lv.id
-            ORDER  BY e.data_emprestimo DESC
-        """).fetchall()
+        st.divider()
+        st.markdown("<div class='sl'>WhatsApp</div>", unsafe_allow_html=True)
 
-    buf1 = io.StringIO()
-    w1   = csv.writer(buf1)
-    w1.writerow(["Título", "Autor", "Categoria", "Cadastrado em"])
-    for r in livros_rows:
-        w1.writerow(list(r))
+        _wa_status = evo_status()
+        if _wa_status == "open":
+            st.success("✅ WhatsApp conectado! As mensagens serão enviadas diretamente pelo sistema.")
+            if st.button("Desconectar WhatsApp", use_container_width=True):
+                try:
+                    requests.delete(
+                        f"{EVO_URL}/instance/logout/{EVO_INSTANCE}",
+                        headers=EVO_HEADERS, timeout=5,
+                    )
+                    st.toast("WhatsApp desconectado.", icon="⚠️")
+                    st.rerun()
+                except Exception:
+                    st.toast("Erro ao desconectar.", icon="❌")
+        elif _wa_status == "erro":
+            st.error("❌ Evolution API indisponível. Verifique se o Docker está rodando.")
+        else:
+            st.warning("📵 WhatsApp desconectado. Escaneie o QR code abaixo para conectar:")
+            if st.button("Gerar QR Code", use_container_width=True):
+                _qr_data = evo_qrcode()
+                if _qr_data:
+                    # Tenta os vários caminhos possíveis da Evolution API
+                    _b64 = (
+                        _qr_data.get("base64")
+                        or (_qr_data.get("qrcode") or {}).get("base64")
+                        or _qr_data.get("code")
+                        or (_qr_data.get("qrcode") or {}).get("code")
+                    )
+                    if _b64 and len(_b64) > 100:
+                        # Remove prefixo data:image/... se presente
+                        if "," in _b64:
+                            _b64 = _b64.split(",", 1)[1]
+                        st.session_state["_qr_b64"] = _b64
+                    else:
+                        # Mostra resposta bruta para diagnóstico
+                        st.session_state["_qr_b64"] = None
+                        st.warning(f"Resposta da API sem imagem. Campos: {list(_qr_data.keys())}")
+                else:
+                    st.session_state["_qr_b64"] = None
+                    st.toast("Não foi possível gerar o QR code. Verifique a Evolution API.", icon="❌")
 
-    buf2 = io.StringIO()
-    w2   = csv.writer(buf2)
-    w2.writerow(["Leitor", "Telefone", "Livro", "Empréstimo", "Devolução", "Status", "Renovações"])
-    for r in emp_rows:
-        w2.writerow(list(r))
+            # Exibe QR persistido no session_state (sobrevive ao rerender)
+            if st.session_state.get("_qr_b64"):
+                import base64 as _b64mod
+                st.image(_b64mod.b64decode(st.session_state["_qr_b64"]), caption="Escaneie com o WhatsApp", width=280)
+                if st.button("✅ Já escaneei", use_container_width=True):
+                    del st.session_state["_qr_b64"]
+                    st.rerun()
 
-    st.download_button("Exportar livros (CSV)", buf1.getvalue(), "livros.csv", "text/csv",
-                       use_container_width=True)
-    st.download_button("Exportar empréstimos (CSV)", buf2.getvalue(), "emprestimos.csv", "text/csv",
-                       use_container_width=True)
+        st.divider()
+        st.markdown("<div class='sl'>Exportar dados</div>", unsafe_allow_html=True)
+
+        with get_conn() as conn:
+            livros_rows = conn.execute(
+                "SELECT titulo, autor, categoria, criado_em FROM livros ORDER BY titulo"
+            ).fetchall()
+            emp_rows = conn.execute("""
+                SELECT lt.nome, lt.telefone, lv.titulo,
+                       e.data_emprestimo, e.data_devolucao, e.status, e.renovacoes
+                FROM   emprestimos e
+                JOIN   leitores lt ON e.leitor_id = lt.id
+                JOIN   livros   lv ON e.livro_id  = lv.id
+                ORDER  BY e.data_emprestimo DESC
+            """).fetchall()
+            leitores_rows = conn.execute(
+                "SELECT nome, telefone, email, endereco, criado_em FROM leitores ORDER BY nome"
+            ).fetchall()
+
+        buf1 = io.StringIO()
+        w1   = csv.writer(buf1)
+        w1.writerow(["Título", "Autor", "Categoria", "Cadastrado em"])
+        for r in livros_rows:
+            w1.writerow(list(r))
+
+        buf2 = io.StringIO()
+        w2   = csv.writer(buf2)
+        w2.writerow(["Leitor", "Telefone", "Livro", "Empréstimo", "Devolução", "Status", "Renovações"])
+        for r in emp_rows:
+            w2.writerow(list(r))
+
+        buf3 = io.StringIO()
+        w3   = csv.writer(buf3)
+        w3.writerow(["Nome", "Telefone", "E-mail", "Endereço", "Cadastrado em"])
+        for r in leitores_rows:
+            w3.writerow(list(r))
+
+        st.download_button("Exportar livros (CSV)", buf1.getvalue(), "livros.csv", "text/csv",
+                           use_container_width=True)
+        st.download_button("Exportar empréstimos (CSV)", buf2.getvalue(), "emprestimos.csv", "text/csv",
+                           use_container_width=True)
+        st.download_button("Exportar leitores (CSV)", buf3.getvalue(), "leitores.csv", "text/csv",
+                           use_container_width=True)
 
     # ── Gerenciar usuários ────────────────────────────────────────────
     st.divider()
     st.markdown("<div class='sl'>Usuários do sistema</div>", unsafe_allow_html=True)
 
-    # Formulário de novo usuário — expander igual ao de leitores/livros
-    with st.expander("Criar novo usuário", expanded=False):
-        nu_login = st.text_input("Usuário *", placeholder="nome de acesso", key="nu_login")
-        nu_senha = st.text_input("Senha *", type="password", key="nu_senha")
-        nu_conf  = st.text_input("Confirmar senha *", type="password", key="nu_conf")
-        if st.button("Salvar usuário", key="sv_nu", type="primary", use_container_width=True):
-            if not nu_login.strip() or not nu_senha:
-                st.toast("Preencha usuário e senha.", icon="❌")
-            elif nu_senha != nu_conf:
-                st.toast("As senhas não coincidem.", icon="❌")
-            elif len(nu_senha) < 4:
-                st.toast("Mínimo 4 caracteres na senha.", icon="❌")
-            else:
-                try:
-                    with get_conn() as conn:
-                        conn.execute(
-                            "INSERT INTO usuarios (usuario, senha_hash) VALUES (?,?)",
-                            (nu_login.strip(), hash_senha(nu_senha)),
-                        )
-                    st.session_state.edit_usuario = None
-                    st.toast(f"Usuário '{nu_login.strip()}' criado!", icon="✅")
-                    st.rerun()
-                except sqlite3.IntegrityError:
-                    st.toast(f"Usuário '{nu_login.strip()}' já existe.", icon="❌")
+    # Formulário de novo usuário — apenas admin
+    if _eh_admin:
+        with st.expander("Criar novo usuário", expanded=False):
+            nu_login = st.text_input("Usuário *", placeholder="nome de acesso", key="nu_login")
+            nu_senha = st.text_input("Senha *", type="password", key="nu_senha")
+            nu_conf  = st.text_input("Confirmar senha *", type="password", key="nu_conf")
+            if st.button("Salvar usuário", key="sv_nu", type="primary", use_container_width=True):
+                if not nu_login.strip() or not nu_senha:
+                    st.toast("Preencha usuário e senha.", icon="❌")
+                elif nu_senha != nu_conf:
+                    st.toast("As senhas não coincidem.", icon="❌")
+                elif len(nu_senha) < 4:
+                    st.toast("Mínimo 4 caracteres na senha.", icon="❌")
+                else:
+                    try:
+                        with get_conn() as conn:
+                            conn.execute(
+                                "INSERT INTO usuarios (usuario, senha_hash) VALUES (?,?)",
+                                (nu_login.strip(), hash_senha(nu_senha)),
+                            )
+                        st.session_state.edit_usuario = None
+                        st.toast(f"Usuário '{nu_login.strip()}' criado!", icon="✅")
+                        st.rerun()
+                    except sqlite3.IntegrityError:
+                        st.toast(f"Usuário '{nu_login.strip()}' já existe.", icon="❌")
 
     usuarios_list = q_usuarios()
     for u in usuarios_list:
